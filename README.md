@@ -20,34 +20,30 @@ Both workflows can start from a file or from an API request, but from
 `process_850()` / `process_invoice()` onward it is the exact same Python
 functions either way — that reuse is the whole point of the design.
 
+### Inbound 850 Purchase Order Workflow
+
 ```mermaid
 flowchart TD
-    subgraph IN850["Inbound 850"]
-        A1["input/valid_850.txt"] --> A3
-        A2["POST /edi/850"] --> A3
-        A3["process_850() — main.py"] --> A4["parse_edi() — edi_parser.py"]
-        A4 --> A5["validate_850() — validation.py"]
-        A5 --> A6["generate_997() — edi_997.py"]
-        A6 --> A7{"valid?"}
-        A7 -->|yes| A8["convert_850_to_json() — edi_parser.py"]
-        A7 -->|no| A9["errors only, no JSON"]
-        A8 --> A10["save_850_output() — main.py"]
-        A9 --> A10
-        A10 --> A11["output/997/*.txt"]
-        A10 --> A12["output/850_json/*.json"]
-    end
+    A1["File input: input/valid_850.txt<br/>or API: POST /edi/850"] --> A2["parse_edi()<br/>src/edi_parser.py"]
+    A2 --> A3["validate_850()<br/>src/validation.py"]
+    A3 -->|Valid 850| A4["convert_850_to_json()<br/>src/edi_parser.py"]
+    A3 -->|Valid or Invalid| A5["generate_997()<br/>src/edi_997.py"]
+    A4 --> A6["Save PO JSON<br/>output/850_json/PO10001.json"]
+    A5 --> A7["Save 997<br/>output/997/PO10001_997.txt"]
+    A6 --> A8["Return API response<br/>or file-based result"]
+    A7 --> A8
+```
 
-    subgraph OUT810["Outbound Invoice"]
-        B1["input/valid_invoice.json"] --> B3
-        B2["POST /invoice/810"] --> B3
-        B3["process_invoice() — main.py"] --> B4["validate_invoice() — validation.py"]
-        B4 --> B5{"valid?"}
-        B5 -->|no| B9["errors only, no EDI"]
-        B5 -->|yes| B6["generate_810() — edi_810.py"]
-        B6 --> B7["validate_generated_810() — validation.py"]
-        B7 --> B8["save_810_output() — main.py"]
-        B8 --> B10["output/810/*.txt"]
-    end
+### Outbound 810 Invoice Workflow
+
+```mermaid
+flowchart TD
+    B1["File input: input/valid_invoice.json<br/>or API: POST /invoice/810"] --> B2["validate_invoice()<br/>src/validation.py"]
+    B2 -->|Valid invoice| B3["generate_810()<br/>src/edi_810.py"]
+    B2 -->|Invalid invoice| B4["Return validation errors"]
+    B3 --> B5["validate_810()<br/>src/validation.py"]
+    B5 --> B6["Save X12 810<br/>output/810/INV10001_810.txt"]
+    B6 --> B7["Return API response<br/>or file-based result"]
 ```
 
 ---
