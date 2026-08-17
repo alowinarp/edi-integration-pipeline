@@ -1,0 +1,24 @@
+{
+  "invoice_date": "20260817",
+  "purchase_order_number": "PO10002",
+  "buyer": {
+    "name": "NORTHWIND RETAIL LLC",
+    "id": "BUYER001"
+  },
+  "line_items": [
+    {
+      "line_number": "1",
+      "product_id": "WIDGET-100",
+      "quantity": "ABC",
+      "unit_of_measure": "EA",
+      "unit_price": "12.50"
+    },
+    {
+      "line_number": "2",
+      "product_id": "",
+      "quantity": "5",
+      "unit_of_measure": "CA",
+      "unit_price": "-45.00"
+    }
+  ]
+}

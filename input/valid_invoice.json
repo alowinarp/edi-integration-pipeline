@@ -1,0 +1,29 @@
+{
+  "invoice_number": "INV10001",
+  "invoice_date": "20260817",
+  "purchase_order_number": "PO10001",
+  "buyer": {
+    "name": "NORTHWIND RETAIL LLC",
+    "id": "BUYER001"
+  },
+  "seller": {
+    "name": "CASCADE SUPPLY CO",
+    "id": "SELLER001"
+  },
+  "line_items": [
+    {
+      "line_number": "1",
+      "product_id": "WIDGET-100",
+      "quantity": "10",
+      "unit_of_measure": "EA",
+      "unit_price": "12.50"
+    },
+    {
+      "line_number": "2",
+      "product_id": "GADGET-200",
+      "quantity": "5",
+      "unit_of_measure": "CA",
+      "unit_price": "45.00"
+    }
+  ]
+}
