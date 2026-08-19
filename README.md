@@ -1,8 +1,8 @@
-# Simple EDI Pipeline — Version 1
+# edi-integration-pipeline
 
-A small, deliberately plain Python project that demonstrates two EDI workflows:
+A small, deliberately plain Python project demonstrating two EDI workflows:
 
-1. **Inbound X12 850** → parse → validate → generate 997 → convert to JSON
+1. **Inbound X12 850** → validate envelope → parse → validate transaction → generate 997 → convert to JSON
 2. **Outbound invoice JSON** → validate → generate X12 810 → validate the generated EDI
 
 Everything runs two ways — from files and from a FastAPI endpoint — using the
@@ -12,36 +12,61 @@ The code uses only functions, dictionaries, lists, strings, loops and
 conditionals. No classes, no dataclasses, no database, no third-party EDI
 library. Readability is the point.
 
+> **Build status:** This is a rebuild of the `v0.1-simple` baseline, adding an
+> explicit envelope-validation layer and splitting validation/translation by
+> transaction type. `validate_envelope.py`'s six check functions are built and
+> verified; the public `validate_envelope()` orchestrator, transaction-tier
+> porting, and the HTTP status-code mapping are in progress. See
+> **Where this stands** below for the current line.
+
+---
+
+## Why an envelope layer
+
+Real EDI platforms (Sterling, WTX) treat envelope integrity — ISA/GS/GE/IEA
+structure, delimiter detection, control-number matching — as a distinct gate
+that runs *before* any transaction-specific validation, because a broken
+envelope means segment boundaries themselves can't be trusted. This project
+mirrors that: `validate_envelope()` runs first and can halt outright
+(`EDIParseError`) on a file too malformed to even parse, or collect a list of
+structural errors (missing segments, bad control numbers, mismatched counts)
+that don't stop parsing but do fail the interchange. Only once the envelope
+passes does transaction-tier validation (850/810 specific rules) run.
+
+This also drives the HTTP contract: envelope failure is a client error (400)
+— the request itself was malformed. Transaction-tier rejection is not — a
+correctly-formed 850 that fails business validation is a *successful* API
+call that correctly reports an EDI business outcome, so it returns 200 with
+the rejection recorded in the 997 body (AK5/AK9), not in the HTTP status.
+
 ---
 
 ## Flow diagram
-
-Both workflows can start from a file or from an API request, but from
-`process_850()` / `process_invoice()` onward it is the exact same Python
-functions either way — that reuse is the whole point of the design.
 
 ### Inbound 850 Purchase Order Workflow
 
 ```mermaid
 flowchart TD
-    A1["File input: input/valid_850.txt<br/>or API: POST /edi/850"] --> A2["parse_edi()<br/>src/edi_parser.py"]
-    A2 --> A3["validate_850()<br/>src/validation.py"]
-    A3 -->|Valid 850| A4["convert_850_to_json()<br/>src/edi_parser.py"]
-    A3 -->|Valid or Invalid| A5["generate_997()<br/>src/edi_997.py"]
-    A4 --> A6["Save PO JSON<br/>output/850_json/PO10001.json"]
+    A1["File input: input/valid_850.txt<br/>or API: POST /edi/850"] --> A2["validate_envelope()<br/>src/validate_envelope.py"]
+    A2 -->|EDIParseError| A2E["HTTP 400<br/>envelope structurally invalid"]
+    A2 -->|Envelope OK| A3["translate_850()<br/>src/translation/translate_850.py"]
+    A3 --> A4["validate_850()<br/>src/validation/validate_850.py"]
+    A4 -->|Valid or Invalid| A5["generate_997()<br/>src/edi_997.py"]
+    A4 -->|Valid 850| A6["Purchase order JSON"]
     A5 --> A7["Save 997<br/>output/997/PO10001_997.txt"]
-    A6 --> A8["Return API response<br/>or file-based result"]
-    A7 --> A8
+    A6 --> A8["Save PO JSON<br/>output/850_json/PO10001.json"]
+    A7 --> A9["HTTP 200<br/>always, regardless of AK5 accept/reject"]
+    A8 --> A9
 ```
 
 ### Outbound 810 Invoice Workflow
 
 ```mermaid
 flowchart TD
-    B1["File input: input/valid_invoice.json<br/>or API: POST /invoice/810"] --> B2["validate_invoice()<br/>src/validation.py"]
-    B2 -->|Valid invoice| B3["generate_810()<br/>src/edi_810.py"]
+    B1["File input: input/valid_invoice.json<br/>or API: POST /invoice/810"] --> B2["validate_invoice()<br/>src/validation/validate_810.py"]
+    B2 -->|Valid invoice| B3["translate_810()<br/>src/translation/translate_810.py"]
     B2 -->|Invalid invoice| B4["Return validation errors"]
-    B3 --> B5["validate_810()<br/>src/validation.py"]
+    B3 --> B5["validate_generated_810()<br/>src/validation/validate_810.py"]
     B5 --> B6["Save X12 810<br/>output/810/INV10001_810.txt"]
     B6 --> B7["Return API response<br/>or file-based result"]
 ```
@@ -51,19 +76,29 @@ flowchart TD
 ## Project structure
 
 ```
-simple-edi-pipeline/
+edi-integration-pipeline/
 ├── src/
-│   ├── main.py          FastAPI app + file-based examples + the two pipelines
-│   ├── edi_parser.py    file reading/writing, splitting X12, 850 -> JSON
-│   ├── validation.py    validate_850(), validate_invoice(), validate_generated_810()
-│   ├── edi_997.py       generate_997()
-│   └── edi_810.py       generate_810() and the invoice total math
-├── input/               sample inbound files
+│   ├── main.py                       FastAPI app + file-based examples + the two pipelines
+│   ├── edi_parser.py                 delimiter detection, segment/element splitting,
+│   │                                  segment lookup — parsing primitives only
+│   ├── edi_exceptions.py             EDIParseError
+│   ├── validate_envelope.py          envelope structural gate (ISA/GS/GE/IEA)
+│   ├── validation/
+│   │   ├── validation_shared.py      shared primitives (presence, qualifier pairing)
+│   │   ├── validate_850.py           compliance + business-rule checks for inbound 850
+│   │   └── validate_810.py           checks for invoice JSON and generated 810
+│   ├── translation/
+│   │   ├── translation_shared.py     shared parse/convert primitives
+│   │   ├── translate_850.py          850 segments -> purchase order JSON (parse + convert)
+│   │   └── translate_810.py          invoice JSON -> 810 segments
+│   ├── edi_997.py                    generate_997()
+│   └── edi_810.py                    generate_810() and the invoice total math
+├── input/                            sample inbound files
 ├── output/
-│   ├── 997/             generated X12 997 acknowledgments
-│   ├── 850_json/        JSON produced from inbound 850s
-│   └── 810/             generated X12 810 invoices
-├── tests/test_edi.py    pytest suite
+│   ├── 997/                          generated X12 997 acknowledgments
+│   ├── 850_json/                     JSON produced from inbound 850s
+│   └── 810/                          generated X12 810 invoices
+├── tests/test_edi.py                 pytest suite
 ├── requirements.txt
 ├── .gitignore
 └── README.md
@@ -73,8 +108,15 @@ simple-edi-pipeline/
 
 | File | Contents |
 |---|---|
-| `src/edi_parser.py` | `read_text_file()`, `write_text_file()`, `read_json_file()`, `write_json_file()`, `split_edi_segments()`, `parse_edi()`, `get_segment()`, `get_segments()`, `get_element()`, `build_segment()`, `convert_850_to_json()` |
-| `src/validation.py` | `validate_850()`, `validate_invoice()`, `validate_generated_810()`. Each returns a **list of readable error strings**; an empty list means valid. |
+| `src/edi_parser.py` | `read_text_file()`, `write_text_file()`, `read_json_file()`, `write_json_file()`, `detect_delimiters()`, `split_segments()`, `parse_edi()`, `get_segment()`, `get_segments()`, `get_element()`, `pad_to_length()`. Parsing-only — no transaction-specific translation logic lives here. |
+| `src/edi_exceptions.py` | `EDIParseError` — raised for halt-tier parse failures (interchange too short/malformed to safely parse further). |
+| `src/validate_envelope.py` | `validate_envelope()` — public orchestrator (in progress). Private checks: `check_isa()` (halt-tier), `check_required_envelopes()`, `check_gs04()`, `check_control_numbers()`, `check_group_count()`, `check_transaction_count()` (collect-tier, share one `errors` list). |
+| `src/validation/validate_850.py` | Transaction-tier checks for an inbound 850, split into compliance-tier (feeds the 997/AK5) and business-rule-tier (value sanity, no ack equivalent). |
+| `src/validation/validate_810.py` | `validate_invoice()`, `validate_generated_810()`. |
+| `src/validation/validation_shared.py` | Primitives shared across 850/810 validation — segment presence, qualifier-pairing checks (e.g. REF01→REF02), `is_number()`, `has_value()`. |
+| `src/translation/translate_850.py` | Parses 850 segments and converts to purchase-order JSON in one step — parsing is a sub-step of translation, not a peer stage. |
+| `src/translation/translate_810.py` | Converts invoice JSON to 810 segments. |
+| `src/translation/translation_shared.py` | Primitives shared across 850/810 translation. |
 | `src/edi_997.py` | `generate_997()` — builds ISA/GS/ST/AK1/AK2/AK5/AK9/SE/GE/IEA, accepted or rejected. |
 | `src/edi_810.py` | `generate_810()`, `calculate_invoice_total()`, `calculate_line_amount()`, `make_control_number()`. |
 | `src/main.py` | `process_850()`, `save_850_output()`, `process_invoice()`, `save_810_output()`, the three API endpoints, and `run_file_examples()`. |
@@ -98,18 +140,40 @@ simple-edi-pipeline/
 
 ---
 
+## Where this stands
+
+Built and terminal-verified today:
+
+- `edi_parser.py`: `detect_delimiters()`, `split_segments()`, `parse_edi()` wired together correctly
+- `validate_envelope.py` private checks, all six: `check_isa()` (halt-tier, raises `EDIParseError`), `check_required_envelopes()`, `check_gs04()`, `check_control_numbers()`, `check_group_count()`, `check_transaction_count()` (collect-tier, share one `errors` list)
+
+Not yet built:
+
+- `validate_envelope()` itself — the public function wiring the six checks together in sequence and returning the accumulated `errors` list
+- Transaction-tier porting into `validation/validate_850.py` / `validate_810.py`
+- Parse/convert logic into `translation/translate_850.py` / `translate_810.py`
+- HTTP status-code mapping in `main.py` (400 on envelope failure, 200 always on a processed request regardless of AK5 accept/reject, 500 only on genuine unhandled bugs)
+
+Known open questions, deliberately deferred rather than guessed at:
+
+- Fixed positional indexing vs. qualifier-scanning for PO1 line items
+- Whether `get_element()`'s silent `""` fallback on a missing element should instead be a checker-tier rejection
+- True calendar validity for GS04 (currently checks digit-format/length only, not that the date is a real calendar date)
+
+---
+
 ## Setup on macOS
 
 Create the virtual environment (once):
 
 ```bash
-cd /Users/aperalta/python-projects/simple-edi-pipeline && python3 -m venv .venv
+cd /Users/aperalta/python-projects/edi-integration-pipeline && python3 -m venv .venv
 ```
 
 Activate it (every new terminal session):
 
 ```bash
-cd /Users/aperalta/python-projects/simple-edi-pipeline && source .venv/bin/activate
+cd /Users/aperalta/python-projects/edi-integration-pipeline && source .venv/bin/activate
 ```
 
 Your prompt now starts with `(.venv)`. Install the dependencies:
@@ -203,68 +267,6 @@ cat output/810/INV10001_810.txt
 pytest
 ```
 
-Expected: `15 passed`.
-
----
-
-## Expected output
-
-**Valid 850** — accepted, PO10001, two line items, and this 997:
-
-```
-ISA*00*          *00*          *ZZ*CASCADESUPPLY  *ZZ*NORTHWINDRTL   *260817*1030*U*00401*000000101*0*P*>~
-GS*FA*CASCADESUPPLY*NORTHWINDRTL*20260817*1030*101*X*004010~
-ST*997*0001~
-AK1*PO*101~
-AK2*850*0001~
-AK5*A~
-AK9*A*1*1*1~
-SE*6*0001~
-GE*1*101~
-IEA*1*000000101~
-```
-
-Note where the control numbers come from: `AK1*PO*101` repeats the inbound
-GS06, and `AK2*850*0001` repeats the inbound ST02. Sender and receiver are
-swapped in the ISA because the acknowledgment travels back the other way.
-
-**Invalid 850** — rejected, `AK5*R*5` / `AK9*R*1*1*0`, and:
-
-```
-Purchase order number is missing (BEG03)
-Purchase order date is missing (BEG05)
-PO1 line 1: quantity 'ABC' is not a valid positive number
-```
-
-**Valid invoice** — accepted, total 350.00 sent as `TDS*35000`:
-
-```
-ISA*00*          *00*          *ZZ*SELLER001      *ZZ*BUYER001       *260817*1030*U*00401*000010001*0*P*>~
-GS*IN*SELLER001*BUYER001*20260817*1030*10001*X*004010~
-ST*810*0001~
-BIG*20260817*INV10001**PO10001~
-REF*IV*INV10001~
-N1*BY*NORTHWIND RETAIL LLC*92*BUYER001~
-N1*SE*CASCADE SUPPLY CO*92*SELLER001~
-IT1*1*10*EA*12.50**BP*WIDGET-100~
-IT1*2*5*CA*45.00**BP*GADGET-200~
-TDS*35000~
-CTT*2~
-SE*10*0001~
-GE*1*10001~
-IEA*1*000010001~
-```
-
-**Invalid invoice** — rejected:
-
-```
-Invoice field is missing or empty: invoice_number
-Invoice is missing the seller section
-Line item 1: quantity 'ABC' is not a valid positive number
-Line item 2: product/SKU identifier is missing
-Line item 2: unit price '-45.00' is not a valid positive number
-```
-
 ---
 
 ## How an 850 moves through the Python functions
@@ -278,14 +280,15 @@ input/valid_850.txt              POST /edi/850
                        |
                 process_850(edi_text)          <- main.py, read this top to bottom
                        |
-                parse_edi()                    <- edi_parser.py
-                       |     text -> list of segments, each a list of elements
-                validate_850()                 <- validation.py
+                validate_envelope()            <- validate_envelope.py
+                       |     raises EDIParseError (halt) or collects
+                       |     structural errors -> 400 if any halt-tier failure
+                translate_850()                <- translation/translate_850.py
+                       |     text -> purchase order JSON (parse is a sub-step)
+                validate_850()                 <- validation/validate_850.py
                        |     returns [] or a list of readable error strings
                 generate_997()                 <- edi_997.py
                        |     uses the inbound ISA / GS06 / ST02
-                convert_850_to_json()          <- edi_parser.py (only if valid)
-                       |
                 save_850_output()              <- main.py
                        |
         output/997/PO10001_997.txt
@@ -306,13 +309,13 @@ input/valid_invoice.json         POST /invoice/810
                        |
              process_invoice(invoice)          <- main.py
                        |
-                validate_invoice()             <- validation.py
+                validate_invoice()             <- validation/validate_810.py
                        |
-                generate_810()                 <- edi_810.py
+                translate_810()                <- translation/translate_810.py
                        |     BIG, REF, N1 x2, IT1 per line,
                        |     TDS from calculate_invoice_total(),
                        |     CTT, then the SE segment count
-                validate_generated_810()       <- validation.py
+                validate_generated_810()       <- validation/validate_810.py
                        |     re-parses the EDI it just built and
                        |     checks SE01 and CTT01 add up
                 save_810_output()              <- main.py
@@ -324,7 +327,7 @@ input/valid_invoice.json         POST /invoice/810
 
 ## Where to start reading
 
-Start with **`src/main.py`**, specifically `process_850()`. It is nine lines of
-real work and names every other function in the project in the order they run.
-From there follow each call into `edi_parser.py`, `validation.py`, `edi_997.py`
-and `edi_810.py`.
+Start with **`src/main.py`**, specifically `process_850()`. It names every
+other function in the project in the order they run. From there follow each
+call into `validate_envelope.py`, `edi_parser.py`, `translation/`,
+`validation/`, `edi_997.py`, and `edi_810.py`.
