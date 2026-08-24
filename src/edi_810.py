@@ -12,7 +12,17 @@ appears in the finished document:
 
 from datetime import datetime
 
-from edi_parser import build_segment, pad_to_length
+from edi_parser import Delimiters, build_segment, pad_to_length, parse_edi
+
+# The 810 is generated from scratch (not parsed from an inbound file), so
+# there are no delimiters to inherit from anywhere. These are the delimiters
+# this system always uses when it writes outbound EDI.
+
+DEFAULT_DELIMITERS = Delimiters(
+    element_separator="*",
+    sub_element_separator=">",
+    segment_terminator="~",
+)
 
 
 def calculate_line_amount(line_item):
@@ -51,7 +61,7 @@ def make_control_number(invoice_number):
     return digits
 
 
-def generate_810(invoice):
+def generate_810(invoice, delimiters=DEFAULT_DELIMITERS):
     """Return the X12 810 for this invoice dictionary, as one EDI string."""
     invoice_number = invoice["invoice_number"]
     invoice_date = invoice["invoice_date"]
@@ -99,7 +109,7 @@ def generate_810(invoice):
         "P",
         ">",
     ]
-    edi_segments.append(build_segment(isa_elements))
+    edi_segments.append(build_segment(isa_elements, delimiters))
 
     # ----- GS ("IN" is the functional group code for invoices) -----
     gs_elements = [
@@ -113,10 +123,10 @@ def generate_810(invoice):
         "X",
         "004010",
     ]
-    edi_segments.append(build_segment(gs_elements))
+    edi_segments.append(build_segment(gs_elements, delimiters))
 
     # ----- ST -----
-    edi_segments.append(build_segment(["ST", "810", transaction_control_number]))
+    edi_segments.append(build_segment(["ST", "810", transaction_control_number], delimiters))
 
     # ----- BIG: invoice date/number and the purchase order it bills against -----
     big_elements = [
@@ -126,17 +136,17 @@ def generate_810(invoice):
         "",                       # BIG03 purchase order date (not tracked here)
         purchase_order_number,    # BIG04 purchase order number
     ]
-    edi_segments.append(build_segment(big_elements))
+    edi_segments.append(build_segment(big_elements, delimiters))
 
     # ----- REF: seller's invoice number ("IV") -----
-    edi_segments.append(build_segment(["REF", "IV", invoice_number]))
+    edi_segments.append(build_segment(["REF", "IV", invoice_number], delimiters))
 
     # ----- N1: buyer then seller -----
     buyer_elements = ["N1", "BY", buyer["name"], "92", buyer["id"]]
-    edi_segments.append(build_segment(buyer_elements))
+    edi_segments.append(build_segment(buyer_elements, delimiters))
 
     seller_elements = ["N1", "SE", seller["name"], "92", seller["id"]]
-    edi_segments.append(build_segment(seller_elements))
+    edi_segments.append(build_segment(seller_elements, delimiters))
 
     # ----- IT1: one segment per invoice line -----
     for line_item in line_items:
@@ -150,28 +160,28 @@ def generate_810(invoice):
             "BP",                               # IT106 product id qualifier
             str(line_item["product_id"]),       # IT107 product id
         ]
-        edi_segments.append(build_segment(it1_elements))
+        edi_segments.append(build_segment(it1_elements, delimiters))
 
     # ----- TDS: total amount, sent with an implied decimal (cents) -----
     invoice_total = calculate_invoice_total(invoice)
     # 350.0 -> 35000 -> "35000". round() before int() avoids float rounding
     # surprises such as 34999.999999999996.
     total_in_cents = int(round(invoice_total * 100))
-    edi_segments.append(build_segment(["TDS", str(total_in_cents)]))
+    edi_segments.append(build_segment(["TDS", str(total_in_cents)], delimiters))
 
     # ----- CTT: how many line items -----
-    edi_segments.append(build_segment(["CTT", str(len(line_items))]))
+    edi_segments.append(build_segment(["CTT", str(len(line_items))], delimiters))
 
     # ----- SE: count ST through SE inclusive -----
     # ISA and GS sit outside the transaction set, so subtract 2, then add 1
     # for the SE segment being created right now.
     segment_count = len(edi_segments) - 2 + 1
     edi_segments.append(
-        build_segment(["SE", str(segment_count), transaction_control_number])
+        build_segment(["SE", str(segment_count), transaction_control_number], delimiters)
     )
 
     # ----- GE and IEA close the group and the interchange -----
-    edi_segments.append(build_segment(["GE", "1", group_control_number]))
-    edi_segments.append(build_segment(["IEA", "1", interchange_control_number]))
+    edi_segments.append(build_segment(["GE", "1", group_control_number], delimiters))
+    edi_segments.append(build_segment(["IEA", "1", interchange_control_number], delimiters))
 
     return "\n".join(edi_segments) + "\n"

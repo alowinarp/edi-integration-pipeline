@@ -14,20 +14,41 @@ import json
 import os
 
 from typing import NamedTuple
-
-# ---------------------------------------------------------------------------
-# Retrieve Delimiters helpers
-# ---------------------------------------------------------------------------
+from edi_exceptions import EDIParseError
 
 class Delimiters(NamedTuple):
     element_separator: str
     sub_element_separator: str
     segment_terminator: str
 
-def detect_delimiters(raw_content: str) -> Delimiters:
-    element_separator = raw_content[3]
-    sub_element_separator = raw_content[104]
-    segment_terminator = raw_content[105]
+class EDIParsingResult(NamedTuple):
+    delimiters: Delimiters
+    segments: list[list[str]]
+
+# ---------------------------------------------------------------------------
+# Retrieve Delimiters helpers
+# ---------------------------------------------------------------------------
+
+def check_isa(raw_edi: str) -> None:
+
+    if not raw_edi.startswith("ISA"):
+        raise EDIParseError("Missing ISA segment")
+
+    if len(raw_edi) < 106:
+        raise EDIParseError("Incomplete ISA segment")
+    
+    isa_terminator = raw_edi[105]
+
+    if isa_terminator.isalnum():
+        raise EDIParseError("Invalid segment terminator")
+
+    return None
+
+
+def detect_delimiters(raw_edi: str) -> Delimiters:
+    element_separator = raw_edi[3]
+    sub_element_separator = raw_edi[104]
+    segment_terminator = raw_edi[105]
 
     return Delimiters(
         element_separator=element_separator,
@@ -97,36 +118,44 @@ def write_json_file(file_path, data):
 # Splitting and parsing X12
 # ---------------------------------------------------------------------------
 
-def split_segments(raw_content: str, delimiters: Delimiters) -> list:
+def split_segments(edi_text: str, delimiters: Delimiters) -> list:
 
-    segments = raw_content.split(delimiters.segment_terminator)
+    segments = edi_text.split(delimiters.segment_terminator)
 
     segment_strings = []
 
     for segment in segments:
         trimmed_segment = segment.strip()
         if trimmed_segment != "":
-            # Split elements so segment[0] becomes "GS", segment[1] becomes "PO", etc.
-            elements = trimmed_segment.split(delimiters.element_separator)
-            segment_strings.append(elements)
+            segment_strings.append(trimmed_segment)
 
     return segment_strings
 
 
-def parse_edi(edi_text: str, delimeters: Delimiters) -> list:
+def parse_edi(raw_edi: str) -> EDIParsingResult:
     """Turn EDI text into a list of segments, each segment a list of elements.
-
     This is deliberately NOT a general purpose X12 parser. It assumes the
     separators defined at the top of this file.
     """
-    segment_strings = split_segments(edi_text,delimeters)
 
-    segments = []
-    for segment_string in segment_strings:
-        elements = segment_string.split(delimeters.element_separator)
-        segments.append(elements)
+    edi_text = raw_edi.strip()
 
-    return segments
+    check_isa(edi_text)
+
+    edi_delimiters = detect_delimiters(edi_text)
+    edi_segments = split_segments(edi_text, edi_delimiters)
+
+    segment_elements = []
+    # Split elements so segment[0] becomes "GS", segment[1] becomes "PO", etc.
+
+    for segment in edi_segments:
+        elements = segment.split(edi_delimiters.element_separator)
+        segment_elements.append(elements)
+
+    return EDIParsingResult(
+        delimiters=edi_delimiters,
+        segments=segment_elements,
+    ) 
 
 
 def get_segment(segments: list, segment_id: str) -> list | None:
@@ -167,6 +196,12 @@ def get_element(segment: list[str] | None, position: int) -> str:
 
     return ""
 
+def build_segment(elements: str, delimiters: Delimiters):
+    """Join a list of elements into one segment string ending with "~".
+
+    "*".join(["PO1", "1", "10"]) -> "PO1*1*10"
+    """
+    return delimiters.element_separator.join(elements) + delimiters.segment_terminator
 
 def pad_to_length(value, length):
     """Pad a string with trailing spaces to a fixed width (ISA needs this).

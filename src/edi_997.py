@@ -16,7 +16,7 @@ from datetime import datetime
 from edi_parser import get_segment, get_element, build_segment, pad_to_length
 
 
-def generate_997(segments, validation_errors):
+def generate_997(segments, validation_errors, delimiters):
     """Return the 997 as one EDI string.
 
     `segments` is the parsed inbound 850.
@@ -85,7 +85,7 @@ def generate_997(segments, validation_errors):
         "P",
         ">",
     ]
-    edi_segments.append(build_segment(isa_elements))
+    edi_segments.append(build_segment(isa_elements, delimiters))
 
     # ----- GS ("FA" is the functional group code for acknowledgments) -----
     gs_elements = [
@@ -99,27 +99,27 @@ def generate_997(segments, validation_errors):
         "X",
         "004010",
     ]
-    edi_segments.append(build_segment(gs_elements))
+    edi_segments.append(build_segment(gs_elements, delimiters))
 
     # ----- ST -----
-    edi_segments.append(build_segment(["ST", "997", ack_transaction_control_number]))
+    edi_segments.append(build_segment(["ST", "997", ack_transaction_control_number], delimiters))
 
     # ----- AK1: which functional group is being acknowledged -----
     edi_segments.append(
-        build_segment(["AK1", original_functional_id, original_group_control_number])
+        build_segment(["AK1", original_functional_id, original_group_control_number], delimiters)
     )
 
     # ----- AK2: which transaction set inside that group -----
     edi_segments.append(
-        build_segment(["AK2", "850", original_transaction_control_number])
+        build_segment(["AK2", "850", original_transaction_control_number], delimiters)
     )
 
     # ----- AK5: the verdict for that one transaction set -----
     if acknowledgment_code == "A":
-        edi_segments.append(build_segment(["AK5", "A"]))
+        edi_segments.append(build_segment(["AK5", "A"], delimiters))
     else:
         # "5" is the X12 code for "one or more segments in error".
-        edi_segments.append(build_segment(["AK5", "R", "5"]))
+        edi_segments.append(build_segment(["AK5", "R", "5"], delimiters))
 
     # ----- AK9: the verdict for the whole functional group -----
     ak9_elements = [
@@ -129,19 +129,19 @@ def generate_997(segments, validation_errors):
         "1",              # transaction sets received
         accepted_count,   # transaction sets accepted
     ]
-    edi_segments.append(build_segment(ak9_elements))
+    edi_segments.append(build_segment(ak9_elements, delimiters))
 
     # ----- SE: count ST through SE inclusive -----
     # Everything appended after the ISA and GS is inside the transaction set,
     # plus 1 for the SE segment that is about to be added.
     segment_count = len(edi_segments) - 2 + 1
     edi_segments.append(
-        build_segment(["SE", str(segment_count), ack_transaction_control_number])
+        build_segment(["SE", str(segment_count), ack_transaction_control_number], delimiters)
     )
 
     # ----- GE and IEA close the group and the interchange -----
-    edi_segments.append(build_segment(["GE", "1", ack_group_control_number]))
-    edi_segments.append(build_segment(["IEA", "1", ack_interchange_control_number]))
+    edi_segments.append(build_segment(["GE", "1", ack_group_control_number], delimiters))
+    edi_segments.append(build_segment(["IEA", "1", ack_interchange_control_number], delimiters))
 
     # One segment per line so the generated file is easy to read.
     return "\n".join(edi_segments) + "\n"

@@ -15,19 +15,22 @@ Trace an outbound invoice by reading process_invoice() from top to bottom.
 
 import os
 
-from fastapi import Body, FastAPI
+from fastapi import Body, FastAPI, HTTPException
 
 from edi_parser import (
     parse_edi,
-    convert_850_to_json,
     read_text_file,
     read_json_file,
     write_text_file,
     write_json_file,
 )
-from validation import validate_850, validate_invoice, validate_generated_810
+
 from edi_997 import generate_997
 from edi_810 import generate_810
+from validate_envelope import validate_envelope
+from validation.validate_850 import validate_850
+from validation.validate_810 import validate_invoice, validate_generated_810
+from translation.translate_850 import translate_850
 
 
 # ---------------------------------------------------------------------------
@@ -48,7 +51,7 @@ OUTPUT_810_FOLDER = os.path.join(PROJECT_FOLDER, "output", "810")
 # Workflow 1 - inbound 850
 # ---------------------------------------------------------------------------
 
-def process_850(edi_text):
+def process_850(raw_edi):
     """Run one inbound 850 through the whole pipeline.
 
     parse -> validate -> 997 -> JSON
@@ -56,19 +59,30 @@ def process_850(edi_text):
     Returns a dictionary holding every result, so the caller can decide what
     to do with it (write files, return it from the API, assert on it in a test).
     """
-    # STEP 1 - text into a list of segments
-    segments = parse_edi(edi_text)
+    # STEP 1 - text into a list of segments and validate envelopes
+    parsed = parse_edi(raw_edi)
 
-    # STEP 2 - check the segments
-    validation_errors = validate_850(segments)
+    # STEP 2 - validate envelopes
+    envelope_errors = validate_envelope(parsed.segments)
 
-    # STEP 3 - acknowledge, accepted or rejected
-    acknowledgment_997 = generate_997(segments, validation_errors)
+    if len(envelope_errors) > 0:
+        result = {}
+        result["validation_status"] = "envelope_rejected"
+        result["validation_errors"] = envelope_errors
+        result["purchase_order"] = None
+        result["acknowledgment_997"] = None
+        return result
 
-    # STEP 4 - only convert to JSON when the 850 is good
+    # STEP 3 - validate the segments
+    validation_errors = validate_850(parsed.segments)
+
+    # STEP 4 - generate 997
+    acknowledgment_997 = generate_997(parsed.segments, validation_errors, parsed.delimiters)
+
+    # STEP 5 - only convert to JSON when the 850 is good
     if len(validation_errors) == 0:
         validation_status = "accepted"
-        purchase_order = convert_850_to_json(segments)
+        purchase_order = translate_850(parsed.segments)
     else:
         validation_status = "rejected"
         purchase_order = None
@@ -89,6 +103,9 @@ def save_850_output(result):
     printing a trace or returning from the API.
     """
     saved_files = {}
+
+    if result["validation_status"] == "envelope_rejected":
+        return saved_files  # nothing to write, no 997 exists
 
     if result["validation_status"] == "accepted":
         purchase_order_number = result["purchase_order"]["purchase_order_number"]
@@ -194,6 +211,10 @@ def post_850(edi_text: str = Body(..., media_type="text/plain")):
     body is required.
     """
     result = process_850(edi_text)
+
+    if result["validation_status"] == "envelope_rejected":
+        raise HTTPException(status_code=400, detail=result["validation_errors"])
+    
     saved_files = save_850_output(result)
 
     response = {}
@@ -246,7 +267,10 @@ def run_850_file_example(file_name):
     for error in result["validation_errors"]:
         print("  error:", error)
 
-    if result["purchase_order"] is not None:
+    if result["validation_status"] == "envelope_rejected":
+        print("envelope rejected — no 997 generated, no purchase order")
+
+    elif result["purchase_order"] is not None:
         purchase_order = result["purchase_order"]
         print("PO number :", purchase_order["purchase_order_number"])
         print("PO date   :", purchase_order["purchase_order_date"])
@@ -254,8 +278,8 @@ def run_850_file_example(file_name):
         print("seller    :", purchase_order["seller"]["name"])
         print("line items:", purchase_order["line_item_count"])
 
-    print("generated 997:")
-    print(result["acknowledgment_997"].strip())
+        print("generated 997:")
+        print(result["acknowledgment_997"].strip())
 
     for description in saved_files:
         print("saved", description, "->", saved_files[description])
@@ -292,10 +316,11 @@ def run_invoice_file_example(file_name):
 
 def run_file_examples():
     """Process all four sample files in input/."""
-    run_850_file_example("valid_850.txt")
-    run_850_file_example("invalid_850.txt")
-    run_invoice_file_example("valid_invoice.json")
-    run_invoice_file_example("invalid_invoice.json")
+    #run_850_file_example("valid_850.txt")
+    #run_850_file_example("invalid_850.txt")
+    run_850_file_example("simple850StreamBad.edi")
+    #run_invoice_file_example("valid_invoice.json")
+    #run_invoice_file_example("invalid_invoice.json")
 
 
 # This block runs only when the file is executed directly
