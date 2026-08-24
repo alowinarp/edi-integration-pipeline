@@ -78,12 +78,12 @@ which parses and converts to JSON together in one function.
 ```mermaid
 flowchart TD
     A0["File input: input/valid_850.txt<br/>or API: POST /edi/850"] --> A1["parse_edi()<br/>src/edi_parser.py"]
-    A1 -->|EDIParseError<br/>check_isa() fails| A1E["HTTP 400<br/>file too malformed to parse"]
-    A1 -->|Parsed OK| A2["validate_envelope()<br/>src/validate_envelope.py<br/>collect-tier, already-parsed segments"]
-    A2 -->|Envelope errors found| A2E["envelope_rejected<br/>no 997 generated<br/>HTTP 400"]
-    A2 -->|Envelope OK| A3["validate_850()<br/>src/validation/validate_850.py"]
-    A3 -->|Compliance errors found| A5["generate_997()<br/>rejected AK5/AK9<br/>src/edi_997.py"]
-    A3 -->|Compliance OK| A4["translate_850()<br/>src/translation/translate_850.py<br/>parse + convert to JSON in one step"]
+    A1 -->|"EDIParseError: check_isa fails"| A1E["HTTP 400<br/>file too malformed to parse"]
+    A1 -->|"Parsed OK"| A2["validate_envelope()<br/>src/validate_envelope.py<br/>collect-tier, already-parsed segments"]
+    A2 -->|"Envelope errors found"| A2E["envelope_rejected<br/>no 997 generated<br/>HTTP 400"]
+    A2 -->|"Envelope OK"| A3["validate_850()<br/>src/validation/validate_850.py"]
+    A3 -->|"Compliance errors found"| A5["generate_997()<br/>rejected AK5/AK9<br/>src/edi_997.py"]
+    A3 -->|"Compliance OK"| A4["translate_850()<br/>src/translation/translate_850.py<br/>parse + convert to JSON in one step"]
     A4 --> A5b["generate_997()<br/>accepted AK5/AK9<br/>src/edi_997.py"]
     A4 --> A6["Purchase order JSON"]
     A5 --> A7["Save 997<br/>output/997/PO10001_997.txt"]
@@ -98,8 +98,8 @@ flowchart TD
 ```mermaid
 flowchart TD
     B1["File input: input/valid_invoice.json<br/>or API: POST /invoice/810"] --> B2["validate_invoice()<br/>src/validation/validate_810.py"]
-    B2 -->|Valid invoice| B3["translate_810()<br/>src/translation/translate_810.py"]
-    B2 -->|Invalid invoice| B4["Return validation errors"]
+    B2 -->|"Valid invoice"| B3["translate_810()<br/>src/translation/translate_810.py"]
+    B2 -->|"Invalid invoice"| B4["Return validation errors"]
     B3 --> B5["validate_generated_810()<br/>src/validation/validate_810.py"]
     B5 --> B6["Save X12 810<br/>output/810/INV10001_810.txt"]
     B6 --> B7["Return API response<br/>or file-based result"]
