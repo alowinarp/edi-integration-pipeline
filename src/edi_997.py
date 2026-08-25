@@ -144,4 +144,4 @@ def generate_997(segments, validation_errors, delimiters):
     edi_segments.append(build_segment(["IEA", "1", ack_interchange_control_number], delimiters))
 
     # One segment per line so the generated file is easy to read.
-    return "\n".join(edi_segments) + "\n"
+    return "".join(edi_segments)

@@ -1,13 +1,12 @@
 """
 edi_parser.py
 -------------
-Reading files, splitting X12 into segments.
+Reading files, parsing EDI files, setting/retrieving the delimiters.
 
 Python notes for this file:
   * A "segment" here is just a Python LIST of strings.
         "PO1*1*10*EA*12.50"  ->  ["PO1", "1", "10", "EA", "12.50"]
   * A parsed EDI document is just a LIST OF LISTS (a list of segments).
-  * Nothing in this project uses classes. Dictionaries and lists only.
 """
 
 import json
@@ -16,14 +15,25 @@ import os
 from typing import NamedTuple
 from edi_exceptions import EDIParseError
 
+
 class Delimiters(NamedTuple):
     element_separator: str
     sub_element_separator: str
     segment_terminator: str
 
+
 class EDIParsingResult(NamedTuple):
     delimiters: Delimiters
     segments: list[list[str]]
+
+
+# The delimiters this system uses when it writes outbound EDI from scratch
+# (there's nothing inbound to inherit delimiters from in that case).
+DEFAULT_DELIMITERS = Delimiters(
+    element_separator="*",
+    sub_element_separator=">",
+    segment_terminator="~",
+)
 
 # ---------------------------------------------------------------------------
 # Retrieve Delimiters helpers
