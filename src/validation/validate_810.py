@@ -100,10 +100,12 @@ def validate_generated_810(edi_text):
     of IT1 segments.
     """
     errors = []
-    segments = parse_edi(edi_text)
+    result = parse_edi(edi_text)
+    segments = result.segments
 
     required_segment_ids = ["ISA", "GS", "ST", "BIG", "IT1", "TDS", "CTT",
                             "SE", "GE", "IEA"]
+    
     for segment_id in required_segment_ids:
         if get_segment(segments, segment_id) is None:
             errors.append("Generated 810 is missing segment: " + segment_id)
