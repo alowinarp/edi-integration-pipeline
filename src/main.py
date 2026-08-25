@@ -26,12 +26,11 @@ from edi_parser import (
 )
 
 from edi_997 import generate_997
-from edi_810 import generate_810
 from validate_envelope import validate_envelope
 from validation.validate_850 import validate_850
 from validation.validate_810 import validate_invoice, validate_generated_810
 from translation.translate_850 import translate_850
-
+from translation.translate_810 import translate_810
 
 # ---------------------------------------------------------------------------
 # Folder locations
@@ -150,7 +149,7 @@ def process_invoice(invoice):
         return result
 
     # STEP 2 - build the EDI
-    edi_810 = generate_810(invoice)
+    edi_810 = translate_810(invoice)
 
     # STEP 3 - read the generated EDI back and check it
     generated_errors = validate_generated_810(edi_810)
@@ -317,9 +316,10 @@ def run_invoice_file_example(file_name):
 def run_file_examples():
     """Process all four sample files in input/."""
     #run_850_file_example("valid_850.txt")
+    run_850_file_example("valid_850Test.edi")
     #run_850_file_example("invalid_850.txt")
-    run_850_file_example("simple850StreamBad.edi")
-    #run_invoice_file_example("valid_invoice.json")
+    #run_850_file_example("simple850StreamBad.edi")
+    run_invoice_file_example("valid_invoice.json")
     #run_invoice_file_example("invalid_invoice.json")
 
 
