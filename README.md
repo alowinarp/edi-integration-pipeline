@@ -15,15 +15,23 @@ library. Readability is the point.
 > **Build status:** This is a rebuild of the `v0.1-simple` baseline, adding an
 > explicit envelope-validation layer and splitting validation/translation by
 > transaction type. `validate_envelope.py`, `validation/validate_850.py`,
-> `translation/translate_850.py`, and the HTTP status-code mapping in
-> `main.py` are built and verified. Parsing responsibility now lives
-> entirely in `edi_parser.py` — `validate_envelope.py` no longer parses,
-> it only checks already-parsed segments. `generate_997()` is now
-> delimiter-aware (no more hardcoded `*`/`~`), though only proven against
-> default-delimiter fixtures so far. The 810 outbound path
-> (`validate_810.py`'s two functions are built; `translate_810.py`/
-> `edi_810.py`'s actual EDI generation is not) is still the weak link. See
-> **Where this stands** below for the current line.
+> `translation/translate_850.py`, `validation/validate_810.py`,
+> `translation/translate_810.py`, and the HTTP status-code mapping in
+> `main.py` are built and verified — **both the inbound 850 path and the
+> outbound 810 path are now proven end to end, through both entry points
+> (file-based and HTTP)**. Parsing responsibility lives entirely in
+> `edi_parser.py` — `validate_envelope.py` no longer parses, it only checks
+> already-parsed segments. `generate_997()` and `translate_810()` are both
+> delimiter-aware and now emit a single unterminated stream (segments joined
+> by their own `~` terminator only, no embedded `\n`) for compatibility with
+> platforms that reject non-streamed EDI. The delimiter-threading fix is
+> proven against a non-default-delimiter fixture (`+` in place of `*`), not
+> just default fixtures. What was `edi_810.py`/`generate_810()` is now
+> `translation/translate_810.py`/`translate_810()` — a real bug in
+> `validate_810.py` (parsing the raw `parse_edi()` result object instead of
+> unpacking `.segments`) was found and fixed in the process, which is what
+> had made the outbound path look broken. See **Where this stands** below
+> for the current line.
 
 ---
 
@@ -126,9 +134,9 @@ edi-integration-pipeline/
 │   ├── translation/
 │   │   ├── translation_shared.py     shared parse/convert primitives
 │   │   ├── translate_850.py          850 segments -> purchase order JSON (parse + convert)
-│   │   └── translate_810.py          invoice JSON -> 810 segments
-│   ├── edi_997.py                    generate_997()
-│   └── edi_810.py                    generate_810() and the invoice total math
+│   │   └── translate_810.py          invoice JSON -> 810 segments (built and verified;
+│   │                                  formerly edi_810.py / generate_810())
+│   └── edi_997.py                    generate_997()
 ├── input/                            sample inbound files
 ├── output/
 │   ├── 997/                          generated X12 997 acknowledgments
@@ -147,15 +155,14 @@ edi-integration-pipeline/
 | `src/edi_parser.py` | Owns all parsing, including the halt-tier check. `check_isa()` (raises `EDIParseError` — moved here from `validate_envelope.py`, since parsing and halt-detection are one responsibility), `detect_delimiters()`, `split_segments()`, `parse_edi()` (calls `check_isa()` → `detect_delimiters()` → `split_segments()` → element-split, returns an `EDIParsingResult` with both `segments` and `delimiters`), `get_segment()`, `get_segments()`, `get_element()`, `build_segment()` (now takes a `delimiters` parameter — no more hardcoded `*`/`~` module constants), `pad_to_length()`, plus the file I/O helpers (`read_text_file()`, `write_text_file()`, `read_json_file()`, `write_json_file()`). |
 | `src/edi_exceptions.py` | `EDIParseError` — raised for halt-tier parse failures (interchange too short/malformed to safely parse further). |
 | `src/validate_envelope.py` | `validate_envelope()` — public orchestrator, built and verified. No longer parses — takes already-parsed segments and an implicit fresh `errors` list, pure collect-tier, same pattern as `validate_850()`. Private checks: `check_required_envelopes()`, `check_gs04()` (format check plus a calendar-validity check via `datetime.strptime` — a deliberate gap-fill feature, not standard compliance checking, since Sterling fails a bad GS04 date silently with no 997), `check_control_numbers()`, `check_group_count()`, `check_transaction_count()`. A non-empty result halts `process_850()` before `validate_850()` runs — see **Why an envelope layer** above. |
-| `src/validation/validate_850.py` | `validate_850()` — public orchestrator, built and verified. Compliance-tier checks: `check_required_850_segments()` (ST/BEG/SE/PO1 presence), `check_required_850_header()` (ST01, BEG03/BEG05), `check_po1_required_elements()` (quantity/price per line), `check_po1_product_pairing()` (PO1 qualifier/ID pairs), `check_ref_pairing()` (REF01 present → REF02 required, unconditional), `check_segment_count()` (SE01 vs. actual segment count). Business-rule tier (price tolerance, vendor allowlist) not yet built. **Open question:** a PO102 numeric-format error (`"quantity 'ABC' is not a valid positive number"`) surfaced during testing that isn't accounted for in the six checks above — needs confirming whether this is a new seventh check, which function it lives in, and whether it also covers PO104 (unit price). |
-| `src/validation/validate_810.py` | `validate_invoice()` (required top-level fields, buyer/seller sections, per-line-item quantity/price/product-id checks) and `validate_generated_810()` (re-parses generated EDI, confirms required segments present, ST01 is `"810"`, SE01 segment count matches, CTT01 matches IT1 count) — both built. |
+| `src/validation/validate_850.py` | `validate_850()` — public orchestrator, built and verified. Compliance-tier checks: `check_required_850_segments()` (ST/BEG/SE/PO1 presence), `check_required_850_header()` (ST01, BEG03/BEG05), `check_po1_required_elements()` (quantity/price presence **and** numeric format per line — `is_positive_number()` on PO102 quantity, `is_number()` on PO104 unit price, both bundled into this one check rather than split out separately), `check_po1_product_pairing()` (PO1 qualifier/ID pairs), `check_ref_pairing()` (REF01 present → REF02 required, unconditional), `check_segment_count()` (SE01 vs. actual segment count). Business-rule tier (price tolerance, vendor allowlist) not yet built. |
+| `src/validation/validate_810.py` | `validate_invoice()` (required top-level fields, buyer/seller sections, per-line-item quantity/price/product-id checks) and `validate_generated_810()` (re-parses generated EDI, confirms required segments present, ST01 is `"810"`, SE01 segment count matches, CTT01 matches IT1 count) — both built and now tested clean against a real generated 810. **Bug fixed this session:** `validate_generated_810()` was calling `parse_edi(edi_text)` and handing the whole return object straight to `get_segment()`, instead of unpacking `.segments` first (the same pattern `process_850()` already used correctly). Every required-segment check failed identically as a result — not a partial failure, all ten at once — which is what made the outbound path look broken. One-line fix (`segments = parsed.segments`); the generated EDI itself had been correct the entire time. |
 | `src/validation/validation_shared.py` | Primitives shared across 850/810 validation — `is_number()`, `is_positive_number()`, `has_value()`. `check_ref_pairing()` is intentionally *not* here yet — it lives in `validate_850.py` until `validate_810.py`'s REF usage is confirmed to need the same shape (not yet confirmed — `validate_invoice()` doesn't currently check REF pairing at all). |
 | `src/translation/translate_850.py` | Built and verified — parses 850 segments and converts to purchase-order JSON (nested dict, `line_items` list) in one step, only for transactions that already passed `validate_850()`. Known open items: only the first PO1 qualifier/ID pair (PO106/107) is captured — a second pair (PO108/109) present in real fixtures is silently dropped; the N1 loop only recognizes `BY`/`SE` entity codes, so `ST` (ship-to) data is parsed then discarded. |
-| `src/translation/translate_810.py` | Converts invoice JSON to 810 segments. Not yet built — `main.py` currently calls `generate_810()` from `edi_810.py` directly for this step; a test run against `valid_invoice.json` came back with every required 810 segment missing (ISA, GS, ST, BIG, IT1, TDS, CTT, SE, GE, IEA), so this path is confirmed broken, not just unbuilt. |
+| `src/translation/translate_810.py` | `translate_810(invoice)` — converts invoice JSON to 810 segments (BIG, REF, N1 x2, IT1 per line, TDS via `calculate_invoice_total()`, CTT). **Renamed and relocated this session** from `edi_810.py`'s `generate_810()` — the JSON→EDI direction is genuine format translation (business data — line items, pricing, parties — crossing formats), the same category as `translate_850()`'s EDI→JSON direction, just reversed. `generate_997()` stayed a `generate_*` because it only assembles a protocol acknowledgment from control numbers and a pass/fail verdict — no business-data payload crosses a format boundary there. Built and verified end to end (file-based and HTTP) once the `validate_810.py` unpacking bug above was fixed. |
 | `src/translation/translation_shared.py` | Primitives shared across 850/810 translation. Not yet built. |
-| `src/edi_997.py` | `generate_997(segments, validation_errors, delimiters)` — builds ISA/GS/ST/AK1/AK2/AK5/AK9/SE/GE/IEA, accepted or rejected, wired to `validate_850()`'s output. Now delimiter-aware (every `build_segment()` call passes through the inbound interchange's actual delimiters instead of hardcoded `*`/`~`) — proven correct only against default-delimiter fixtures so far; not yet tested against a fixture using non-default delimiters. **Next task:** review against the current shape of `validate_850()`'s error list (see open question above) to confirm accept/reject logic and any error-content handling still line up. |
-| `src/edi_810.py` | `generate_810()`, `calculate_invoice_total()`, `calculate_line_amount()`, `make_control_number()`. Output currently incomplete/broken per the test run noted above. |
-| `src/main.py` | `process_850()` — corrected order: `parse_edi()` → `validate_envelope()` → halt check (`"envelope_rejected"`, no 997, returns early) → `validate_850()` → `generate_997()` (delimiter-aware) → conditional `translate_850()`. `post_850()` maps `"envelope_rejected"` to `HTTPException(400, ...)`. `save_850_output()` and `run_850_file_example()` both guard against the `None` 997/purchase-order on the envelope-rejected path. `process_invoice()`, `save_810_output()`, the three API endpoints, and `run_file_examples()` round out the file. |
+| `src/edi_997.py` | `generate_997(segments, validation_errors, delimiters)` — builds ISA/GS/ST/AK1/AK2/AK5/AK9/SE/GE/IEA, accepted or rejected, wired to `validate_850()`'s output. Reads `len(validation_errors)` only — never inspects error type or content — so any check added to `validate_850()` in the future is automatically reflected here with no changes needed. Delimiter-aware (every `build_segment()` call passes through the inbound interchange's actual delimiters instead of hardcoded `*`/`~`), now **proven against a non-default-delimiter fixture** (`+` in place of `*`) in addition to default fixtures. Segments are joined with no separator (`"".join(edi_segments)`, changed from `"\n".join(...) + "\n"` this session) so the output is a single unterminated stream — some trading-partner platforms reject embedded newlines between segments. AK5/AK9 report transaction-level accept/reject only; no AK3/AK4 segment-level detail — a deliberate v1 scope cut, not an oversight. |
+| `src/main.py` | `process_850()` — corrected order: `parse_edi()` → `validate_envelope()` → halt check (`"envelope_rejected"`, no 997, returns early) → `validate_850()` → `generate_997()` (delimiter-aware) → conditional `translate_850()`. `post_850()` maps `"envelope_rejected"` to `HTTPException(400, ...)`. `save_850_output()` and `run_850_file_example()` both guard against the `None` 997/purchase-order on the envelope-rejected path. `process_invoice()` calls `validate_invoice()` → `translate_810()` → `validate_generated_810()`, `save_810_output()`, the three API endpoints, and `run_file_examples()` round out the file. The two POST endpoints need no separate presence/trigger gating logic of their own — the route handler firing on an incoming request already is the trigger, since a POST to `/edi/850` or `/invoice/810` unambiguously means "process this." `run_file_examples()` remains a manual dev/test harness (fixture selection by commenting/uncommenting lines) — a known rough edge, not urgent enough to fix ahead of the deadline. |
 
 ### What `input/` contains
 
@@ -180,31 +187,32 @@ edi-integration-pipeline/
 
 Built and terminal-verified:
 
-- `edi_parser.py`: `check_isa()`, `detect_delimiters()`, `split_segments()`, `parse_edi()` wired together correctly, plus `build_segment()` now threading real delimiters instead of hardcoded constants
+- `edi_parser.py`: `check_isa()`, `detect_delimiters()`, `split_segments()`, `parse_edi()` wired together correctly, plus `build_segment()` threading real delimiters instead of hardcoded constants — **now proven against a non-default-delimiter fixture (`+`), not just default (`*`/`~`) fixtures**
 - `validate_envelope.py`: refactored to pure collect-tier — no longer parses, all five private checks plus the public `validate_envelope()` orchestrator
-- `validation/validate_850.py`: all six compliance-tier checks plus the public `validate_850()` orchestrator, tested against a fixture with two planted breaks (empty REF02, mismatched SE01 count) — both caught correctly
+- `validation/validate_850.py`: all six compliance-tier checks plus the public `validate_850()` orchestrator, tested against a fixture with two planted breaks (empty REF02, mismatched SE01 count) — both caught correctly. The PO102/PO104 numeric-format check (quantity/price) is confirmed already built into `check_po1_required_elements()`, not a missing seventh check.
 - `translation/translate_850.py`: parses + converts to purchase-order JSON, tested end to end against a real fixture via `main.py`'s file-based path
-- `validation/validate_810.py`: `validate_invoice()` and `validate_generated_810()` both built
-- `main.py`'s `process_850()`: corrected order (parse → envelope validate → halt check → transaction validate → 997 → conditional translate), envelope-rejected path returns a distinct status with no 997, and `post_850()` maps that to HTTP 400
-- `edi_997.py`: `generate_997()` wired to `validate_850()`'s output and now delimiter-aware
+- `validation/validate_810.py`: `validate_invoice()` and `validate_generated_810()` both built — **and now confirmed working**, after fixing a bug where `validate_generated_810()` wasn't unpacking `parse_edi()`'s return object
+- `translation/translate_810.py`: **new this session** — renamed/relocated from `edi_810.py`'s `generate_810()`. Builds a complete, correct 810 (ISA through IEA); tested end to end via both the file-based path and `POST /invoice/810`
+- `edi_997.py`: `generate_997()` wired to `validate_850()`'s output (count-based only, confirmed no error-content inspection anywhere), delimiter-aware and now proven against non-default delimiters, streams output with no embedded newlines
+- `main.py`'s `process_850()`: corrected order (parse → envelope validate → halt check → transaction validate → 997 → conditional translate), envelope-rejected path returns a distinct status with no 997, and `post_850()` maps that to HTTP 400 — **all three branches (envelope-rejected, transaction-rejected, accepted) proven via live HTTP requests this session, not just the file-based path**
+- `main.py`'s `process_invoice()` / `POST /invoice/810`: proven via live HTTP request, matching the file-based output byte-for-byte in structure
 
-Not yet built or confirmed broken:
+Not yet built:
 
 - Business-rule tier for the 850 (price tolerance, vendor allowlist — deliberately deferred, no ack equivalent)
-- `translation/translate_810.py`, `translation/translation_shared.py` — and `edi_810.py`'s `generate_810()` currently produces an 810 missing every required segment on a real test run; this whole outbound path needs rebuilding, not just wiring
+- `translation/translation_shared.py`
+- AK3/AK4 segment-level detail in the 997 — currently transaction-level accept/reject only (AK5/AK9); a named v1 scope cut, not an oversight
 
 Known open questions, deliberately deferred rather than guessed at:
 
-- **New, from this session:** a PO102 numeric-format error surfaced during testing (`"quantity 'ABC' is not a valid positive number"`) that doesn't map cleanly to the six documented `validate_850()` checks — needs confirming as a real seventh check (name, and whether PO104/unit-price gets the same treatment) before `generate_997()`'s review can be considered complete
-- **New, from this session:** the delimiter-threading fix in `generate_997()`/`build_segment()` has only been tested against `*`/`~` fixtures — needs a fixture with different delimiters (e.g. `^`) to actually prove it works, since a default-delimiter test can't distinguish the fix from the old hardcoded behavior
-- **New, from this session:** `translate_850()`'s PO1 loop only captures the first qualifier/ID pair (PO106/107) — a confirmed second pair (PO108/109) in real fixture data is silently dropped; decision pending on single-pair-v1 vs. building the pairs list now
-- **New, from this session:** `translate_850()`'s N1 loop only recognizes `BY`/`SE` entity codes — `ST` (ship-to) segments are parsed then discarded; not yet decided whether this is intentional v1 scope
+- `translate_850()`'s PO1 loop only captures the first qualifier/ID pair (PO106/107) — a confirmed second pair (PO108/109) in real fixture data is silently dropped; decision pending on single-pair-v1 vs. building the pairs list now
+- `translate_850()`'s N1 loop only recognizes `BY`/`SE` entity codes — `ST` (ship-to) segments are parsed then discarded; not yet decided whether this is intentional v1 scope
 - Symmetric PO1 qualifier/ID check — only qualifier-present/ID-missing is currently caught, not the reverse direction
 - REF02 max length (30) and the PO1 qualifier-pair cap (three pairs: 06/07, 08/09, 10/11) — current best-known values from experience, not yet stated as fully confirmed maximums
 - `check_segment_count()`'s `segments.index()` lookup is safe only because ST and SE are guaranteed unique per transaction set — revisit with `enumerate()` if this pattern is reused against a segment type that can legitimately repeat with identical content
 - Missing segment terminator mid-file silently fusing two segments into one — identified during envelope work, still unfixed
 - Whether `get_element()`'s silent `""` fallback on a missing element should instead be a checker-tier rejection
-- Whether `check_ref_pairing()` generalizes cleanly to the 810 (REF segments are commonly echoed from PO to invoice, but this is an informed hypothesis, not a confirmed second consumer — `validate_invoice()` as built does not currently check REF pairing) — resolve once the 810 outbound path is rebuilt, then extract to `validation_shared.py` if the shape actually matches
+- Whether `check_ref_pairing()` generalizes cleanly to the 810 (REF segments are commonly echoed from PO to invoice, but this is an informed hypothesis, not a confirmed second consumer — `validate_invoice()` as built does not currently check REF pairing) — resolve once `translate_810.py`'s REF usage is reviewed against this, then extract to `validation_shared.py` if the shape actually matches
 
 ---
 
@@ -262,6 +270,15 @@ curl http://127.0.0.1:8000/health
 ```
 
 Expected: `{"status":"ok"}`
+
+**Stopping the server:** use `Ctrl+C` in the uvicorn terminal, never `Ctrl+C`'s
+suspend-only cousin `Ctrl+Z`. `Ctrl+Z` freezes the process in the background
+without releasing port 8000 — it looks stopped because the prompt returns,
+but the port stays held, and the next `uvicorn ... --reload` fails with
+`[Errno 48] Address already in use`, or worse, silently binds against a
+half-alive process that accepts connections but never answers them. If a
+port ever seems stuck, `lsof -i :8000` shows the PID actually holding it,
+and `kill -9 <PID>` clears it before restarting.
 
 ## Submit the sample 850
 
@@ -384,4 +401,6 @@ input/valid_invoice.json         POST /invoice/810
 Start with **`src/main.py`**, specifically `process_850()`. It names every
 other function in the project in the order they run. From there follow each
 call into `validate_envelope.py`, `validation/validate_850.py`,
-`translation/`, `edi_997.py`, and `edi_810.py`.
+`translation/translate_850.py`, `edi_997.py`, and — for the outbound side —
+`process_invoice()`, `validation/validate_810.py`, and
+`translation/translate_810.py`.
