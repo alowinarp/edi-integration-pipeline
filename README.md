@@ -1,250 +1,311 @@
 # edi-integration-pipeline
 
-**X12 EDI parsing, validation, translation and acknowledgment generation in
-plain Python — no third-party EDI library.** Two production-shaped workflows,
-exposed identically as a CLI and as a FastAPI service.
+Python-based X12 EDI integration pipeline for parsing, validating, translating, and acknowledging EDI transactions without a third-party EDI library.
 
-| | |
-|---|---|
-| **Inbound** | X12 850 Purchase Order → envelope gate → compliance validation → purchase-order JSON → 997 acknowledgment |
-| **Outbound** | Invoice JSON → validation → X12 810 Invoice → round-trip validation of the generated EDI |
+The project demonstrates two production-shaped workflows:
 
-Parsing, validation, X12 generation and delimiter handling are implemented
-directly against the 004010 standard. Both entry points call the **same
-functions** — there is exactly one copy of the EDI logic, and the only
-difference between a file run and an HTTP request is where the bytes came
-from.
+| Workflow | Input | Processing | Output |
+|---|---|---|---|
+| Inbound purchase order | X12 850 | Envelope validation, compliance validation, translation, acknowledgment generation | Purchase-order JSON and 997 acknowledgment |
+| Outbound invoice | Invoice JSON | Business validation, X12 810 generation, round-trip validation | X12 810 invoice |
 
-Built by an integration engineer with 18 years in production EDI/B2B
-(IBM Sterling, WebSphere Transformation Extender). The design decisions
-below are the interesting part of this repo — they are the ones that come
-from having watched these pipelines fail in production.
+Both the command-line examples and the FastAPI service use the same processing functions. The entry point changes, but the EDI logic does not.
 
 ---
 
-## Quickstart
+## Purpose
+
+This project shows how Python can support practical EDI/B2B integration work:
+
+- Validate X12 envelopes before transaction-level processing.
+- Detect delimiters from the inbound ISA segment instead of assuming `*` and `~`.
+- Validate selected 850 purchase-order rules before translation.
+- Generate 997 acknowledgments for accepted and rejected 850 transactions.
+- Translate valid 850 purchase orders into structured JSON.
+- Translate invoice JSON into X12 810 invoice output.
+- Re-parse generated outbound EDI to confirm structural correctness before writing the file.
+
+The focus is not to replace enterprise EDI translators. The focus is to make the pipeline behavior visible, testable, and understandable in plain Python.
+
+---
+
+## Features
+
+- Inbound X12 850 processing
+- Outbound X12 810 generation
+- 997 functional acknowledgment generation
+- ISA delimiter detection
+- Envelope validation for ISA/GS/GE/IEA structure
+- Control-number validation
+- Transaction-level validation for selected 850 rules
+- Invoice JSON validation before 810 generation
+- Generated-810 round-trip validation
+- CLI-style sample file processing
+- FastAPI endpoints for HTTP-based processing
+- Pytest test suite
+- Fictional sample input files
+
+---
+
+## High-Level Processing Flow
+
+### Inbound 850
+
+```text
+X12 850 input
+   ↓
+Parse EDI and detect delimiters
+   ↓
+Validate envelope structure
+   ↓
+Validate 850 compliance rules
+   ↓
+Generate 997 acknowledgment
+   ↓
+Translate accepted 850 to JSON
+   ↓
+Write output files / return API response
+```
+
+### Outbound 810
+
+```text
+Invoice JSON input
+   ↓
+Validate invoice payload
+   ↓
+Translate invoice JSON to X12 810
+   ↓
+Re-parse generated 810
+   ↓
+Validate generated EDI structure
+   ↓
+Write output file / return API response
+```
+
+For the detailed diagrams, call order, module responsibilities, validation rules, fixtures, and troubleshooting notes, see [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
+
+---
+
+## Project Structure
+
+```text
+edi-integration-pipeline/
+├── src/
+│   ├── main.py
+│   ├── edi_parser.py
+│   ├── edi_exceptions.py
+│   ├── edi_997.py
+│   ├── validate_envelope.py
+│   ├── validation/
+│   │   ├── validation_shared.py
+│   │   ├── validate_850.py
+│   │   └── validate_810.py
+│   └── translation/
+│       ├── translate_850.py
+│       └── translate_810.py
+├── input/
+│   ├── valid_850.txt
+│   ├── invalid_850.txt
+│   ├── valid_invoice.json
+│   └── invalid_invoice.json
+├── output/
+│   ├── 997/
+│   ├── 850_json/
+│   └── 810/
+├── tests/
+├── docs/
+│   └── ARCHITECTURE.md
+├── README.md
+├── requirements.txt
+└── .gitignore
+```
+
+---
+
+## Requirements
+
+- Python 3.12+
+- FastAPI
+- Uvicorn
+- pytest
+
+Install dependencies from `requirements.txt`.
+
+---
+
+## Setup
 
 ```bash
 git clone https://github.com/<your-username>/edi-integration-pipeline.git
 cd edi-integration-pipeline
-python3 -m venv .venv && source .venv/bin/activate
+
+python3 -m venv .venv
+source .venv/bin/activate
+
 pip install -r requirements.txt
-python src/main.py          # runs all four sample files with a full trace
 ```
 
-Or run it as a service:
+---
+
+## Usage
+
+### Run the sample file workflow
+
+```bash
+python src/main.py
+```
+
+This runs the sample inbound and outbound files and writes generated output to the `output/` folders.
+
+### Run the API service
 
 ```bash
 uvicorn main:app --app-dir src --reload
+```
+
+Interactive API documentation is available at:
+
+```text
+http://127.0.0.1:8000/docs
+```
+
+### Submit an inbound 850 through the API
+
+```bash
 curl -X POST http://127.0.0.1:8000/edi/850 \
-  -H "Content-Type: text/plain" --data-binary @input/valid_850.txt
+  -H "Content-Type: text/plain" \
+  --data-binary @input/valid_850.txt
 ```
 
-Interactive API docs at `http://127.0.0.1:8000/docs`. Tests: `pytest`.
+### Submit an outbound invoice payload through the API
+
+Use the `/invoice/810` endpoint with one of the invoice JSON files in `input/`.
 
 ---
 
-## See it work
+## Testing
 
-### Inbound — 850 in
+Run the full test suite:
 
-```
-ISA*00*          *00*          *ZZ*NORTHWINDRTL   *ZZ*CASCADESUPPLY  *260817*1030*U*00401*000000101*0*P*>~
-GS*PO*NORTHWINDRTL*CASCADESUPPLY*20260817*1030*101*X*004010~
-ST*850*0001~
-BEG*00*SA*PO10001**20260817~
-REF*DP*STORE42~
-N1*BY*NORTHWIND RETAIL LLC*92*BUYER001~
-N1*SE*CASCADE SUPPLY CO*92*SELLER001~
-PO1*1*10*EA*12.50**BP*WIDGET-100~
-PO1*2*5*CA*45.00**BP*GADGET-200~
-CTT*2~
-SE*9*0001~
-GE*1*101~
-IEA*1*000000101~
+```bash
+pytest
 ```
 
-### Purchase-order JSON out
+Run tests with verbose output:
 
-```json
-{
-  "purchase_order_number": "PO10001",
-  "purchase_order_date": "20260817",
-  "purpose_code": "00",
-  "order_type_code": "SA",
-  "control_numbers": {
-    "interchange_control_number": "000000101",
-    "group_control_number": "101",
-    "transaction_control_number": "0001"
-  },
-  "buyer":  { "name": "NORTHWIND RETAIL LLC", "id": "BUYER001" },
-  "seller": { "name": "CASCADE SUPPLY CO",    "id": "SELLER001" },
-  "references": [ { "qualifier": "DP", "value": "STORE42" } ],
-  "line_items": [
-    { "line_number": "1", "quantity": "10", "unit_of_measure": "EA",
-      "unit_price": "12.50", "product_id_qualifier": "BP",
-      "product_id": "WIDGET-100", "extended_amount": 125.0 },
-    { "line_number": "2", "quantity": "5", "unit_of_measure": "CA",
-      "unit_price": "45.00", "product_id_qualifier": "BP",
-      "product_id": "GADGET-200", "extended_amount": 225.0 }
-  ],
-  "line_item_count": 2
-}
+```bash
+pytest -v
 ```
-
-### 997 acknowledgment out — and delimiter fidelity
-
-The 997 below was generated from a variant of the same interchange that uses
-`+` as its element separator instead of `*`. The acknowledgment comes back in
-the sender's own delimiters, not the library's defaults — delimiters are
-detected from the inbound ISA and threaded through every generated segment.
-Output is a single unterminated stream with no embedded newlines, because
-some trading-partner platforms reject them.
-
-```
-ISA+00+          +00+          +ZZ+CASCADESUPPLY  +ZZ+NORTHWINDRTL   +260825+1253+U+00401+000000101+0+P+>~GS+FA+CASCADESUPPLY+NORTHWINDRTL+20260825+1253+101+X+004010~ST+997+0001~AK1+PO+101~AK2+850+0001~AK5+A~AK9+A+1+1+1~SE+6+0001~GE+1+101~IEA+1+000000101~
-```
-
-Submitting `input/invalid_850.txt` — missing BEG03/BEG05 and a non-numeric
-PO102 quantity — produces a negative acknowledgment for the same interchange:
-`AK5*R*5` and `AK9*R*1*1*0`, with the transaction rejected and no JSON written.
-
-### Outbound — invoice JSON in, X12 810 out
-
-```
-ISA*00*          *00*          *ZZ*SELLER001      *ZZ*BUYER001       *260825*1301*U*00401*000010001*0*P*>~GS*IN*SELLER001*BUYER001*20260825*1301*10001*X*004010~ST*810*0001~BIG*20260817*INV10001**PO10001~REF*IV*INV10001~N1*BY*NORTHWIND RETAIL LLC*92*BUYER001~N1*SE*CASCADE SUPPLY CO*92*SELLER001~IT1*1*10*EA*12.50**BP*WIDGET-100~IT1*2*5*CA*45.00**BP*GADGET-200~TDS*35000~CTT*2~SE*10*0001~GE*1*10001~IEA*1*000010001~
-```
-
-`TDS*35000` is the invoice total in cents (350.00), computed from the line
-items. `SE*10` and `CTT*2` are recomputed from what was actually built, then
-verified by re-parsing the generated interchange before it is written.
 
 ---
 
-## Design decisions
+## Example Outputs
 
-### Envelope integrity is a separate gate, ahead of transaction validation
+The project generates three main output types:
 
-Real EDI platforms treat ISA/GS/GE/IEA structure, delimiter detection and
-control-number matching as a distinct tier that runs *before* any
-transaction-specific check, because a broken envelope means segment
-boundaries themselves cannot be trusted. This project mirrors that split:
-
-- **`edi_parser.py`** owns parsing outright, including `check_isa()`, which
-  raises `EDIParseError` on an interchange too malformed to split into
-  segments at all. This is the halt tier — nothing downstream ever sees a
-  file that fails here.
-- **`validate_envelope.py`** takes the already-parsed segment list and
-  *collects* structural errors — missing GS/GE/IEA, invalid GS04 date,
-  mismatched control numbers, wrong group and transaction counts. It does
-  not parse and does not raise.
-
-### An envelope failure produces no 997
-
-A 997 draws its own control numbers from the interchange it is acknowledging.
-If the envelope is unreliable, those numbers are unreliable, and emitting an
-acknowledgment built from them is worse than emitting nothing. Envelope-tier
-failures short-circuit the pipeline with a distinct `envelope_rejected`
-status and are surfaced to monitoring rather than acknowledged to the partner.
-
-### Business rejection is HTTP 200, not 400
-
-This is the distinction most EDI-over-HTTP implementations get wrong.
-
-| Condition | HTTP | Why |
+| Output | Folder | Description |
 |---|---|---|
-| Unparseable interchange | **400** | The request itself is malformed |
-| Envelope rejected | **400** | Structurally invalid, and there is no safe 997 to return |
-| Transaction fails compliance | **200** | The API call succeeded — it correctly reports an EDI business outcome, recorded in AK5/AK9 |
-| Transaction accepted | **200** | — |
+| 997 acknowledgment | `output/997/` | Functional acknowledgment for accepted or rejected 850 transactions |
+| Purchase-order JSON | `output/850_json/` | Translated JSON output for accepted 850 transactions |
+| X12 810 invoice | `output/810/` | Generated outbound invoice EDI |
 
-A correctly-formed 850 that fails business validation is a *successful*
-integration event. Returning 400 for it conflates transport failure with
-business outcome, and downstream retry logic will hammer a document that will
-never pass.
+A valid inbound 850 produces both a 997 acknowledgment and purchase-order JSON. An 850 that fails transaction-level validation produces a rejected 997 and no purchase-order JSON.
 
-### Validation runs before translation
-
-`validate_850()` operates on the tokenized segment list, not on translated
-JSON. A transaction that fails compliance goes straight to a negative 997
-without ever needing a JSON representation, so building it earlier is wasted
-work on the reject path.
-
-### GS04 gets a calendar-validity check
-
-Not standard compliance checking — a deliberate gap-fill. Sterling fails a
-malformed GS04 date silently, with no 997 and no alert, which turns a
-five-minute data problem into a multi-day trading-partner investigation. This
-pipeline catches it at the envelope gate.
+Envelope-level failures split by acknowledgment tier. A group-tier failure (for example, a GS/GE control-number mismatch) still produces a rejected 997, since the functional group can be identified even though the transaction inside it was never evaluated — no purchase-order JSON is produced. An interchange-tier failure (ISA/IEA, or a missing GS) produces no 997 at all, because the interchange control information is not safe to reuse.
 
 ---
 
-## Inbound flow
+## Design Notes
 
-```mermaid
-flowchart TD
-    A0["File: input/valid_850.txt<br/>or POST /edi/850"] --> A1["parse_edi()<br/>edi_parser.py"]
-    A1 -->|"EDIParseError"| A1E["HTTP 400<br/>unparseable"]
-    A1 -->|"Parsed"| A2["validate_envelope()<br/>collect-tier, no parsing"]
-    A2 -->|"Envelope errors"| A2E["envelope_rejected<br/>no 997 · HTTP 400"]
-    A2 -->|"Envelope OK"| A3["validate_850()<br/>compliance tier"]
-    A3 -->|"Errors"| A5["generate_997()<br/>rejected AK5/AK9"]
-    A3 -->|"OK"| A4["translate_850()<br/>segments to PO JSON"]
-    A4 --> A5b["generate_997()<br/>accepted AK5/AK9"]
-    A4 --> A6["Purchase order JSON"]
-    A5 --> A7["output/997/"]
-    A5b --> A7
-    A6 --> A8["output/850_json/"]
-    A7 --> A9["HTTP 200"]
-    A8 --> A9
-```
+The major design decisions are:
 
-The outbound 810 flow and the full per-file breakdown are in
-[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
+- Envelope validation is separate from transaction validation.
+- Envelope validation is itself split by acknowledgment tier: interchange-tier failures (ISA/IEA, missing GS) are unacknowledgeable and halt with no 997; group-tier failures (GS/GE control-number or count mismatches) are acknowledgeable and produce a rejected 997 instead.
+- Unparseable or structurally unsafe interchanges halt before 997 generation.
+- Transaction-level compliance failures return a business rejection, not a transport failure.
+- Validation runs before translation.
+- Generated outbound 810 files are re-parsed and validated before being written.
+- Delimiters are detected from the inbound ISA and reused when generating acknowledgments.
+
+See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the full design rationale.
 
 ---
 
-## Project structure
+## Current Scope
 
-```
-src/
-├── main.py                  FastAPI app, both pipelines, file-based examples
-├── edi_parser.py            delimiter detection, segment/element splitting,
-│                             segment construction, file I/O
-├── edi_exceptions.py        EDIParseError
-├── validate_envelope.py     envelope structural gate (ISA/GS/GE/IEA)
-├── validation/
-│   ├── validation_shared.py shared numeric/presence primitives
-│   ├── validate_850.py      compliance checks for inbound 850
-│   └── validate_810.py      invoice JSON checks + generated-810 round trip
-├── translation/
-│   ├── translate_850.py     850 segments -> purchase order JSON
-│   └── translate_810.py     invoice JSON -> 810 segments
-└── edi_997.py               generate_997()
+### In scope
 
-input/    sample inbound files (valid and invalid, 850 and invoice)
-output/   generated 997s, purchase-order JSON, generated 810s
-tests/    pytest suite
-```
+- X12 850 purchase-order parsing
+- X12 850 compliance validation for selected rules
+- X12 850 to JSON translation
+- 997 acknowledgment generation
+- Invoice JSON validation
+- Invoice JSON to X12 810 translation
+- Generated 810 validation
+- CLI sample processing
+- FastAPI endpoints
+- Automated tests
 
-## Scope
+### Out of scope for now
 
-**In scope and working:** envelope validation, 850 compliance validation,
-850→JSON translation, 997 generation (transaction-level accept/reject),
-invoice→810 generation with round-trip validation, delimiter fidelity across
-non-default separators, and identical behaviour through both entry points.
-
-**Deliberately out of scope for v1:** business-rule validation for the 850
-(price tolerance, vendor allowlists), AK3/AK4 segment-level detail in the
-997, and a persistence layer. Open items are tracked as
-[issues](../../issues).
-
-**Next:** landing translated transaction data in a warehouse and modelling it
-with dbt — the analytics half of the same pipeline.
+- Full X12 implementation-guide validation
+- Partner-specific business rules
+- AK3/AK4 segment-level detail in the 997
+- Database persistence
+- Authentication and authorization
+- Production message transport such as AS2, SFTP, VAN, or MQ
+- Warehouse loading and dbt models
 
 ---
 
-## Where to start reading
+## Roadmap
 
-`src/main.py`, specifically `process_850()`. It names every other function in
-the project in the order they run.
+- [x] Parse inbound X12 850 files
+- [x] Validate envelope structure
+- [x] Split envelope validation by acknowledgment tier (interchange vs. group)
+- [x] Validate selected 850 compliance rules
+- [x] Generate accepted and rejected 997 acknowledgments
+- [x] Translate valid 850 files to JSON
+- [x] Generate outbound X12 810 invoices from JSON
+- [x] Re-parse and validate generated 810 output
+- [ ] Add AK3/AK4 details to rejected 997 acknowledgments
+- [ ] Add partner-specific validation rule examples
+- [ ] Add batch-processing summary reports
+- [ ] Add structured logging
+- [ ] Add warehouse-loading example
+- [ ] Add dbt model examples for translated transaction data
+
+---
+
+## Data Safety
+
+All EDI and invoice examples in this repository are fictional, generated, or sanitized.
+
+Do not commit:
+
+- Production EDI transactions
+- Trading-partner credentials
+- API keys
+- Connection details
+- Certificates
+- Passwords
+- `.env` files
+- Partner-specific implementation-guide documents that cannot be shared publicly
+
+---
+
+## Project Status
+
+Active development. Current focus: strengthening validation coverage, test coverage, and documentation.
+
+---
+
+## Where to Start Reading
+
+Start with `src/main.py`, especially:
+
+- `process_850()` for the inbound purchase-order workflow
+- `process_invoice()` for the outbound invoice workflow
+
+Then read [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the execution flow and module-level explanation.

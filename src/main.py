@@ -64,12 +64,22 @@ def process_850(raw_edi):
     # STEP 2 - validate envelopes
     envelope_errors = validate_envelope(parsed.segments)
 
-    if len(envelope_errors) > 0:
+    if len(envelope_errors.interchange_errors) > 0:
         result = {}
         result["validation_status"] = "envelope_rejected"
-        result["validation_errors"] = envelope_errors
+        result["validation_errors"] = envelope_errors.interchange_errors
         result["purchase_order"] = None
         result["acknowledgment_997"] = None
+        return result
+
+    if len(envelope_errors.group_errors) > 0:
+        result = {}
+        group_997 = generate_997(parsed.segments, [], parsed.delimiters, group_errors=envelope_errors.group_errors)
+
+        result["validation_status"] = "group_rejected"
+        result["validation_errors"] = envelope_errors.group_errors
+        result["purchase_order"] = None
+        result["acknowledgment_997"] = group_997
         return result
 
     # STEP 3 - validate the segments
@@ -316,10 +326,10 @@ def run_invoice_file_example(file_name):
 def run_file_examples():
     """Process all four sample files in input/."""
     #run_850_file_example("valid_850.txt")
-    run_850_file_example("valid_850Test.edi")
+    #run_850_file_example("valid_850Test.edi")
     #run_850_file_example("invalid_850.txt")
-    #run_850_file_example("simple850StreamBad.edi")
-    run_invoice_file_example("valid_invoice.json")
+    run_850_file_example("simple850StreamBad.edi")
+    #run_invoice_file_example("valid_invoice.json")
     #run_invoice_file_example("invalid_invoice.json")
 
 

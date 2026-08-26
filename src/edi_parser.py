@@ -1,7 +1,10 @@
 """
 edi_parser.py
 -------------
-Reading files, parsing EDI files, setting/retrieving the delimiters.
+This script is for:
+    Reading files, parsing EDI files
+    extracting the delimiters from the ISA segment - element separator, sub-delimiter and segment terminator
+    setting the default delimiters for outbound EDI files
 
 Python notes for this file:
   * A "segment" here is just a Python LIST of strings.
@@ -12,8 +15,9 @@ Python notes for this file:
 import json
 import os
 
-from typing import NamedTuple
+
 from edi_exceptions import EDIParseError
+from typing import NamedTuple
 
 
 class Delimiters(NamedTuple):

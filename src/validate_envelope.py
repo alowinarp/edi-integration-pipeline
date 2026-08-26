@@ -2,29 +2,72 @@
 validate_envelope.py
 -------------
 This script is for:
-    validating the enveloping segments ISA/GS
-    extracting the delimiters from the ISA segment - element separator, sub-delimiter and segment terminator
+    validating the enveloping segments ISA/GS/GE/IEA enveloping structure of a parsed EDI transmission,
+split by acknowledgment tier:
 
-An EMPTY list means "valid". This avoids exceptions and keeps the calling code
-easy to read:
+    Interchange tier (ISA/IEA) — unacknowledgeable. A failure here means no
+    reliable functional group can be identified, so no AK1 can be built.
+    Callers should treat interchange_errors as fatal: reject the envelope,
+    skip 997 generation, return HTTP 400.
 
-    errors = validate_envelope(content)
-    if len(errors) == 0:
+    Group tier (GS/GE) — acknowledgeable. GS presence is confirmed before
+    these checks run, so an AK1 can be built even when a group-tier check
+    fails. Callers should route group_errors into a negative 997 (AK9 with
+    the relevant AK905 code) rather than rejecting outright.
+
+Note: ISA structural validity (presence, length, terminator) is checked
+earlier in edi_parser, since delimiter extraction depends on it — this
+module assumes segments have already been successfully tokenized.
+
+    result = validate_envelope(segments)
+    if result.interchange_errors:
+        # unacknowledgeable — envelope_rejected, no 997, HTTP 400
+        ...
+    elif result.group_errors:
+        # acknowledgeable — negative 997 via generate_997()
+        ...
+    else:
+        # clean — proceed to transaction-tier validation
         ...
 """
 
 from datetime import datetime
 from edi_parser import get_element, get_segment, get_segments
+from typing import NamedTuple
+from validation.validation_shared import AK905Code, EDIError
 
 
+class EnvelopeValidationResult(NamedTuple):
+    interchange_errors: list[str]
+    group_errors: list[EDIError]
+
+
+# ---------------------------------------------------------------------------
+# Interchange Validation helpers
+# ---------------------------------------------------------------------------
 def check_required_envelopes(segments: list, errors: list) -> None:
 
     # ----- required envelope and transaction segments -----
-    required_segment_ids = ["GS", "GE", "IEA"]
+    required_segment_ids = ["GS", "IEA"]
 
     for segment_id in required_segment_ids:
         if get_segment(segments, segment_id) is None:
             errors.append("Missing required segment: " + segment_id)
+
+    return None
+
+
+def check_interchange_control_numbers(segments: list, errors: list) -> None:
+
+    isa_segment = get_segment(segments, "ISA")
+    iea_segment = get_segment(segments, "IEA")
+
+    # Check Interchange Control Numbers (ISA13 vs IEA02)
+    if isa_segment is not None and iea_segment is not None:
+        isa13 = get_element(isa_segment,13)
+        iea02 = get_element(iea_segment,2)
+        if isa13 != iea02:
+            errors.append(f"Interchange Control Number Mismatch: ISA13:{isa13} vs IEA02:{iea02}.")
 
     return None
 
@@ -56,31 +99,7 @@ def check_gs04(segments: list, errors: list) -> None:
     return None
 
 
-def check_control_numbers(segments: list, errors: list) -> None:
-
-    isa_segment = get_segment(segments, "ISA")
-    gs_segment = get_segment(segments, "GS")
-    iea_segment = get_segment(segments, "IEA")
-    ge_segment = get_segment(segments, "GE")
-
-    # Check Interchange Control Numbers (ISA13 vs IEA02)
-    if isa_segment is not None and iea_segment is not None:
-        isa13 = get_element(isa_segment,13)
-        iea02 = get_element(iea_segment,2)
-        if isa13 != iea02:
-            errors.append(f"Interchange Control Number Mismatch: ISA13:{isa13} vs IEA02:{iea02}.")
-
-    # Check Functional Group Control Numbers (GS06 vs GE02)
-    if gs_segment is not None and ge_segment is not None:
-        gs06 = get_element(gs_segment,6)
-        ge02 = get_element(ge_segment,2)
-        if gs06 != ge02:
-            errors.append(f"Group Control Number Mismatch: GS06:{gs06} vs GE02:{ge02}.")
-
-    return None
-
-
-def check_group_count(segments: list, errors: list) -> None:
+def check_interchange_group_count(segments: list, errors: list) -> None:
 
     gs_segment = get_segment(segments, "GS")
     iea_segment = get_segment(segments, "IEA")
@@ -102,6 +121,37 @@ def check_group_count(segments: list, errors: list) -> None:
     return None
 
 
+# ---------------------------------------------------------------------------
+# Group Validation helpers
+# ---------------------------------------------------------------------------
+
+def check_ge_present(segments: list, errors: list) -> None:
+            
+    ge_segment = get_segment(segments, "GE")
+    
+    if ge_segment is None:
+        errors.append(EDIError("Missing required segment: GE", AK905Code.FUNCTIONAL_GROUP_TRAILER_MISSING))
+        return None
+    
+    return None
+
+
+def check_group_control_number(segments: list, errors: list) -> None:
+
+    gs_segment = get_segment(segments, "GS")
+    ge_segment = get_segment(segments, "GE")
+
+    # Check Functional Group Control Numbers (GS06 vs GE02)
+    if gs_segment is not None and ge_segment is not None:
+        gs06 = get_element(gs_segment,6)
+        ge02 = get_element(ge_segment,2)
+
+        if gs06 != ge02:
+            errors.append(EDIError(f"Group Control Number Mismatch: GS06:{gs06} vs GE02:{ge02}.", AK905Code.GROUP_CONTROL_NUMBER_MISMATCH))
+
+    return None
+
+
 def check_transaction_count(segments: list, errors: list) -> None:
 
     st_segment = get_segment(segments, "ST")
@@ -111,7 +161,7 @@ def check_transaction_count(segments: list, errors: list) -> None:
         ge01 = get_element(ge_segment, 1)
 
         if not ge01.isdigit():
-            errors.append(f"GE01 value '{ge01}' is invalid (expected a numeric count).")
+            errors.append(EDIError(f"Invalid Format: GE01 is '{ge01}' - must be a number.", AK905Code.TRANSACTION_COUNT_MISMATCH))
             return None
 
         expected_st_count = int(ge01)
@@ -119,22 +169,30 @@ def check_transaction_count(segments: list, errors: list) -> None:
 
         #Compare counts
         if actual_st_count != expected_st_count:
-            errors.append(f"Transaction set count mismatch: GE01 is {expected_st_count} vs ST segment(s)is {actual_st_count}.")
+            errors.append(EDIError(f"Transaction set count mismatch: GE01 is {expected_st_count} vs ST segment(s) is {actual_st_count}.", AK905Code.TRANSACTION_COUNT_MISMATCH))
 
     return None
 
 
-def validate_envelope(segment_string: list) -> list[str]:
+def validate_envelope(segment_string: list) -> EnvelopeValidationResult:
 
-    envelope_errors: list[str] = []
+    interchange_errors: list[str] = []
+    group_errors: list[EDIError] = []
 
-    check_required_envelopes(segment_string, envelope_errors)
+    check_required_envelopes(segment_string, interchange_errors)
+    check_interchange_control_numbers(segment_string, interchange_errors)
+    check_gs04(segment_string, interchange_errors)
+    check_interchange_group_count(segment_string, interchange_errors)
 
-    check_gs04(segment_string, envelope_errors)
+    if interchange_errors:
+        return EnvelopeValidationResult(interchange_errors, [])
 
-    check_control_numbers(segment_string, envelope_errors)
+    # ----- group tier: GS/GE checks, only reached if GS confirmed present -----
+    check_ge_present(segment_string, group_errors)
+    check_group_control_number(segment_string, group_errors)
+    check_transaction_count(segment_string, group_errors)
 
-    check_group_count(segment_string, envelope_errors)
-    check_transaction_count(segment_string, envelope_errors)
-
-    return envelope_errors
+    return EnvelopeValidationResult(
+        interchange_errors=interchange_errors,
+        group_errors=group_errors
+    )
