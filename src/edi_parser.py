@@ -75,7 +75,7 @@ def detect_delimiters(raw_edi: str) -> Delimiters:
 # File handling helpers
 # ---------------------------------------------------------------------------
 
-def read_text_file(file_path):
+def read_text_file(file_path: str) -> str:
     """Read a whole text file and return it as one string.
 
     `with open(...)` opens the file and automatically closes it again when the
@@ -88,7 +88,7 @@ def read_text_file(file_path):
     return file_contents
 
 
-def write_text_file(file_path, text):
+def write_text_file(file_path: str, text: str) -> str:
     """Write a string to a text file, creating the folder if it is missing."""
     # os.path.dirname("output/997/PO10001_997.txt") -> "output/997"
     folder = os.path.dirname(file_path)
@@ -103,7 +103,7 @@ def write_text_file(file_path, text):
     return file_path
 
 
-def read_json_file(file_path):
+def read_json_file(file_path: str) -> dict:
     """Read a JSON file and return it as a Python dictionary.
 
     json.load() reads from an open file. json.loads() (with the "s") would read
@@ -115,7 +115,7 @@ def read_json_file(file_path):
     return data
 
 
-def write_json_file(file_path, data):
+def write_json_file(file_path: str, data: dict) -> str:
     """Write a Python dictionary to a JSON file, nicely indented."""
     folder = os.path.dirname(file_path)
     if folder != "":
@@ -132,7 +132,7 @@ def write_json_file(file_path, data):
 # Splitting and parsing X12
 # ---------------------------------------------------------------------------
 
-def split_segments(edi_text: str, delimiters: Delimiters) -> list:
+def split_segments(edi_text: str, delimiters: Delimiters) -> list[str]:
 
     segments = edi_text.split(delimiters.segment_terminator)
 
@@ -172,7 +172,7 @@ def parse_edi(raw_edi: str) -> EDIParsingResult:
     ) 
 
 
-def get_segment(segments: list, segment_id: str) -> list | None:
+def get_segment(segments: list[list[str]], segment_id: str) -> list[str] | None:
     """Return the FIRST segment with this ID, or None if it is not present.
 
     Returning None (instead of raising an error) lets the validation code
@@ -185,7 +185,7 @@ def get_segment(segments: list, segment_id: str) -> list | None:
     return None
 
 
-def get_segments(segments: list, segment_id: str) -> list:
+def get_segments(segments: list[list[str]], segment_id: str) -> list[list[str]]:
     """Return ALL segments with this ID as a list (empty list if none)."""
     matching_segments = []
     for segment in segments:
@@ -210,14 +210,14 @@ def get_element(segment: list[str] | None, position: int) -> str:
 
     return ""
 
-def build_segment(elements: str, delimiters: Delimiters):
+def build_segment(elements: list[str], delimiters: Delimiters) -> str:
     """Join a list of elements into one segment string ending with "~".
 
     "*".join(["PO1", "1", "10"]) -> "PO1*1*10"
     """
     return delimiters.element_separator.join(elements) + delimiters.segment_terminator
 
-def pad_to_length(value, length):
+def pad_to_length(value: str, length: int) -> str:
     """Pad a string with trailing spaces to a fixed width (ISA needs this).
 
     .ljust() pads on the right. [:length] then trims anything too long.

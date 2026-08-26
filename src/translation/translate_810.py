@@ -11,14 +11,14 @@ appears in the finished document:
 """
 
 from datetime import datetime
-from edi_parser import DEFAULT_DELIMITERS, build_segment, pad_to_length
+from edi_parser import Delimiters, DEFAULT_DELIMITERS, build_segment, pad_to_length
 
 
 # ---------------------------------------------------------------------------
 # Build Invoice helpers
 # ---------------------------------------------------------------------------
 
-def calculate_line_amount(line_item):
+def calculate_line_amount(line_item: dict) -> float:
     """quantity x unit price, rounded to two decimals."""
     quantity = float(line_item["quantity"])
     unit_price = float(line_item["unit_price"])
@@ -26,7 +26,7 @@ def calculate_line_amount(line_item):
     return round(quantity * unit_price, 2)
 
 
-def calculate_invoice_total(invoice):
+def calculate_invoice_total(invoice: dict) -> float:
     """Add up every line item to get the invoice total."""
     total = 0.0
 
@@ -36,7 +36,7 @@ def calculate_invoice_total(invoice):
     return round(total, 2)
 
 
-def make_control_number(invoice_number):
+def make_control_number(invoice_number: str) -> str:
     """Derive a numeric control number from the invoice number.
 
     A real system would keep a counter somewhere. Deriving the number from the
@@ -58,7 +58,7 @@ def make_control_number(invoice_number):
 # Build Invoice
 # ---------------------------------------------------------------------------
 
-def translate_810(invoice, delimiters=DEFAULT_DELIMITERS):
+def translate_810(invoice: dict, delimiters: Delimiters = DEFAULT_DELIMITERS) -> str:
     """Return the X12 810 for this invoice dictionary, as one EDI string."""
     invoice_number = invoice["invoice_number"]
     invoice_date = invoice["invoice_date"]

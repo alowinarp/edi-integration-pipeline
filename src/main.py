@@ -50,7 +50,7 @@ OUTPUT_810_FOLDER = os.path.join(PROJECT_FOLDER, "output", "810")
 # Workflow 1 - inbound 850
 # ---------------------------------------------------------------------------
 
-def process_850(raw_edi):
+def process_850(raw_edi: str) -> dict:
     """Run one inbound 850 through the whole pipeline.
 
     parse -> validate -> 997 -> JSON
@@ -105,7 +105,7 @@ def process_850(raw_edi):
     return result
 
 
-def save_850_output(result):
+def save_850_output(result: dict) -> dict:
     """Write the 997, and the purchase order JSON when there is one.
 
     Returns a dictionary of the files that were written, which is handy for
@@ -143,7 +143,7 @@ def save_850_output(result):
 # Workflow 2 - outbound invoice / 810
 # ---------------------------------------------------------------------------
 
-def process_invoice(invoice):
+def process_invoice(invoice: dict) -> dict:
     """Run one invoice dictionary through the whole pipeline.
 
     validate -> generate 810 -> validate the generated 810
@@ -180,7 +180,7 @@ def process_invoice(invoice):
     return result
 
 
-def save_810_output(result):
+def save_810_output(result: dict) -> dict:
     """Write the generated 810 to output/810/ and return the file paths."""
     saved_files = {}
 
@@ -206,13 +206,13 @@ app = FastAPI(
 
 
 @app.get("/health")
-def health():
+def health() -> dict:
     """Confirm the API is running."""
     return {"status": "ok"}
 
 
 @app.post("/edi/850")
-def post_850(edi_text: str = Body(..., media_type="text/plain")):
+def post_850(edi_text: str = Body(..., media_type="text/plain")) -> dict:
     """Accept a raw X12 850 as plain text.
 
     Body(..., media_type="text/plain") tells FastAPI to hand over the request
@@ -237,7 +237,7 @@ def post_850(edi_text: str = Body(..., media_type="text/plain")):
 
 
 @app.post("/invoice/810")
-def post_810(invoice: dict = Body(...)):
+def post_810(invoice: dict = Body(...)) -> dict:
     """Accept an invoice as JSON and return the generated X12 810.
 
     The body is typed as a plain `dict`, so FastAPI simply converts the JSON
@@ -259,7 +259,7 @@ def post_810(invoice: dict = Body(...)):
 # File based examples (python src/main.py)
 # ---------------------------------------------------------------------------
 
-def run_850_file_example(file_name):
+def run_850_file_example(file_name: str) -> None:
     """Read one 850 from input/, process it, and print a short trace."""
     print("=" * 70)
     print("850 FILE EXAMPLE:", file_name)
@@ -296,7 +296,7 @@ def run_850_file_example(file_name):
     print("")
 
 
-def run_invoice_file_example(file_name):
+def run_invoice_file_example(file_name: str) -> None:
     """Read one invoice from input/, process it, and print a short trace."""
     print("=" * 70)
     print("INVOICE FILE EXAMPLE:", file_name)
@@ -323,7 +323,7 @@ def run_invoice_file_example(file_name):
     print("")
 
 
-def run_file_examples():
+def run_file_examples() -> None:
     """Process all four sample files in input/."""
     #run_850_file_example("valid_850.txt")
     #run_850_file_example("valid_850Test.edi")

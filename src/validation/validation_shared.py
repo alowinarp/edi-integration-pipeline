@@ -38,7 +38,7 @@ class AK905Code(IntEnum):
 # Shared helpers
 # ---------------------------------------------------------------------------
 
-def is_number(value):
+def is_number(value: str) -> bool:
     """Return True if the text can be converted to a number.
 
     try/except is the normal Python way to test a conversion. float("ABC")
@@ -51,7 +51,7 @@ def is_number(value):
         return False
 
 
-def is_positive_number(value):
+def is_positive_number(value: str) -> bool:
     """Return True if the text is a number greater than zero."""
     if not is_number(value):
         return False
@@ -62,7 +62,7 @@ def is_positive_number(value):
     return True
 
 
-def has_value(dictionary, key):
+def has_value(dictionary: dict, key: str) -> bool:
     """Return True if the key exists in the dictionary and is not empty."""
     if key not in dictionary:
         return False

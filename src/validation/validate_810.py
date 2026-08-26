@@ -1,31 +1,26 @@
 """
-validation.py
+validate_810.py
 -------------
-All validation for this project. Every validate_* function follows the same
-simple pattern:
+Validation for the 810 side of this project: the outbound invoice (JSON)
+before it is translated, and the 810 EDI this project generates from it.
+Every validate_* function follows the same simple pattern:
 
     1. start with an empty list of errors
     2. check one thing at a time
     3. append a human readable sentence when a check fails
     4. return the list
 
-An EMPTY list means "valid". This avoids exceptions and keeps the calling code
-easy to read:
-
-    errors = validate_850(segments)
-    if len(errors) == 0:
-        ...
 """
 
 from edi_parser import get_segment, get_segments, get_element, parse_edi
-from validation.validation_shared import is_number, is_positive_number, has_value
+from validation.validation_shared import is_positive_number, has_value
 
 
 # ---------------------------------------------------------------------------
 # Outbound invoice (JSON) validation
 # ---------------------------------------------------------------------------
 
-def validate_invoice(invoice):
+def validate_invoice(invoice: dict) -> list[str]:
     """Check an invoice dictionary and return a list of human readable errors."""
     errors = []
 
@@ -92,7 +87,7 @@ def validate_invoice(invoice):
 # Validation of the EDI this project generates
 # ---------------------------------------------------------------------------
 
-def validate_generated_810(edi_text):
+def validate_generated_810(edi_text: str) -> list[str]:
     """Re-read a generated 810 and confirm it hangs together.
 
     This is the "did my own output come out right" check: envelope present,
@@ -108,7 +103,7 @@ def validate_generated_810(edi_text):
     
     for segment_id in required_segment_ids:
         if get_segment(segments, segment_id) is None:
-            errors.append("Generated 810 is missing segment: " + segment_id)
+            errors.append(f"Generated 810 is missing segment: {segment_id}")
 
     st_segment = get_segment(segments, "ST")
     if st_segment is not None and get_element(st_segment, 1) != "810":
@@ -143,9 +138,6 @@ def validate_generated_810(edi_text):
     if ctt_segment is not None:
         stated_line_count = get_element(ctt_segment, 1)
         if stated_line_count != str(len(it1_segments)):
-            errors.append(
-                "CTT01 says " + stated_line_count + " line items but " +
-                str(len(it1_segments)) + " IT1 segments were found"
-            )
+            errors.append(f"CTT01 says {stated_line_count} line items but {len(it1_segments)} IT1 segments were found")
 
     return errors
