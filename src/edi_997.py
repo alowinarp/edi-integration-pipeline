@@ -16,11 +16,11 @@ joined by build_segment(). The list positions are the X12 element positions.
 """
 
 from datetime import datetime
-from edi_parser import get_segment, get_segments, get_element, build_segment, pad_to_length
+from edi_parser import Delimiters, get_segment, get_segments, get_element, build_segment, pad_to_length
 from validation.validation_shared import EDIError
 
 
-def generate_997(segments, validation_errors, delimiters, group_errors: list[EDIError] | None = None):
+def generate_997(segments: list[list[str]], validation_errors: list[EDIError] , delimiters: Delimiters, group_errors: list[EDIError] | None = None) -> str:
     """Return the 997 as one EDI string.
 
     `segments` is the parsed inbound 850.
@@ -147,8 +147,20 @@ def generate_997(segments, validation_errors, delimiters, group_errors: list[EDI
         if acknowledgment_code == "A":
             edi_segments.append(build_segment(["AK5", "A"], delimiters))
         else:
-            # "5" is the X12 code for "one or more segments in error".
-            edi_segments.append(build_segment(["AK5", "R", "5"], delimiters))
+            # AK502-AK506 hold at most 5 codes, so dedupe in first-seen
+            # order before slicing — otherwise a repeated fold-to-5 code
+            # crowds out a more specific code (e.g. trailer missing, code 2)
+            # that happened to be appended later.
+            distinct_codes: list[int] = []
+            for error in validation_errors:
+                code = int(error.code)
+                if code not in distinct_codes:
+                    distinct_codes.append(code)
+                if len(distinct_codes) == 5:
+                    break
+
+            ak5_elements = ["AK5", "R"] + [str(code) for code in distinct_codes]
+            edi_segments.append(build_segment(ak5_elements, delimiters))
 
         # ----- AK9: the verdict for the whole functional group -----
         transaction_set_count = str(len(get_segments(segments, "ST")))
