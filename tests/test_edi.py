@@ -17,16 +17,27 @@ Run them from the project folder with:   pytest
 import os
 import sys
 
+
 # The application code lives in src/, which is not on Python's import path when
 # pytest runs from the project folder. This adds it, so `import edi_parser`
 # works below. sys.path is just a list of folders Python searches.
 SRC_FOLDER = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "src")
 sys.path.insert(0, SRC_FOLDER)
 
-from edi_parser import parse_edi, get_segment, get_segments, convert_850_to_json
-from validation import validate_850, validate_invoice, validate_generated_810
 from edi_997 import generate_997
-from edi_810 import generate_810, calculate_invoice_total
+from edi_parser import parse_edi, get_segment, get_segments
+from fastapi.testclient import TestClient
+from main import app, process_850
+from translation.translate_850 import translate_850
+from translation.translate_810 import translate_810, calculate_invoice_total
+from validate_envelope import validate_envelope
+from validation.validate_810 import validate_invoice, validate_generated_810
+from validation.validate_850 import validate_850
+from validation.validation_shared import EDIError, AK5Code, AK905Code
+
+
+client = TestClient(app)
+
 
 INPUT_FOLDER = os.path.join(
     os.path.dirname(os.path.abspath(__file__)), "..", "input"
@@ -37,13 +48,13 @@ INPUT_FOLDER = os.path.join(
 # Small helpers used by several tests
 # ---------------------------------------------------------------------------
 
-def read_sample_850(file_name):
+def read_sample_850(file_name: str) -> str:
     path = os.path.join(INPUT_FOLDER, file_name)
     with open(path, "r") as open_file:
         return open_file.read()
 
 
-def build_sample_invoice():
+def build_sample_invoice() -> dict:
     """One valid invoice, built in Python so the tests do not depend on files."""
     invoice = {
         "invoice_number": "INV10001",
@@ -76,10 +87,10 @@ def build_sample_invoice():
 # Parsing
 # ---------------------------------------------------------------------------
 
-def test_parse_valid_850_finds_the_expected_segments():
+def test_parse_valid_850_finds_the_expected_segments() -> None:
     edi_text = read_sample_850("valid_850.txt")
 
-    segments = parse_edi(edi_text)
+    segments = parse_edi(edi_text).segments
 
     # The first element of the first segment is the segment ID.
     assert segments[0][0] == "ISA"
@@ -88,10 +99,10 @@ def test_parse_valid_850_finds_the_expected_segments():
     assert len(get_segments(segments, "PO1")) == 2
 
 
-def test_parse_reads_individual_elements():
+def test_parse_reads_individual_elements() -> None:
     edi_text = read_sample_850("valid_850.txt")
 
-    segments = parse_edi(edi_text)
+    segments = parse_edi(edi_text).segments
     beg_segment = get_segment(segments, "BEG")
 
     assert beg_segment[3] == "PO10001"   # BEG03 purchase order number
@@ -102,36 +113,75 @@ def test_parse_reads_individual_elements():
 # 850 validation
 # ---------------------------------------------------------------------------
 
-def test_valid_850_has_no_validation_errors():
-    segments = parse_edi(read_sample_850("valid_850.txt"))
+def test_valid_850_has_no_validation_errors() -> None:
+    segments = parse_edi(read_sample_850("valid_850.txt")).segments
 
     errors = validate_850(segments)
 
     assert errors == []
 
 
-def test_invalid_850_is_detected():
-    segments = parse_edi(read_sample_850("invalid_850.txt"))
+def test_invalid_850_is_detected() -> None:
+    segments = parse_edi(read_sample_850("invalid_850.txt")).segments
 
     errors = validate_850(segments)
 
     assert len(errors) > 0
 
-    # Join the messages into one string so they can be searched easily.
-    all_errors = " ".join(errors)
-    assert "Purchase order number is missing" in all_errors
-    assert "Purchase order date is missing" in all_errors
-    assert "quantity 'ABC'" in all_errors
+    po_number_codes = [e.code for e in errors if "Purchase order number is missing" in e.message]
+    po_date_codes = [e.code for e in errors if "Purchase order date is missing" in e.message]
+    quantity_codes = [e.code for e in errors if "Quantity ABC is not a valid positive number" in e.message]
+
+    assert po_number_codes == [AK5Code.SEGMENTS_HAVE_ERRORS]
+    assert po_date_codes == [AK5Code.SEGMENTS_HAVE_ERRORS]
+    assert quantity_codes == [AK5Code.SEGMENTS_HAVE_ERRORS]
+
+
+def test_process_850_short_circuits_on_envelope_rejection() -> None:
+    result = process_850(read_sample_850("invalid_ISA_850.txt"))
+
+    assert result["validation_status"] == "envelope_rejected"
+    assert result["acknowledgment_997"] is None
+    assert result["purchase_order"] is None
+
+
+def test_post_850_endpoint_accepts_a_valid_850() -> None:
+    edi_text = read_sample_850("valid_850.txt")
+
+    response = client.post(
+        "/edi/850",
+        content=edi_text,
+        headers={"Content-Type": "text/plain"},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["validation_status"] == "accepted"
+    assert body["purchase_order"]["purchase_order_number"] == "PO10001"
+    assert "AK5*A" in body["acknowledgment_997"]
+
+
+def test_post_850_endpoint_rejects_a_bad_envelope() -> None:
+    edi_text = read_sample_850("invalid_ISA_850.txt")
+
+    response = client.post(
+        "/edi/850",
+        content=edi_text,
+        headers={"Content-Type": "text/plain"},
+    )
+
+    assert response.status_code == 400
+    assert "Interchange Control Number Mismatch" in response.json()["detail"][0]
 
 
 # ---------------------------------------------------------------------------
 # 850 -> JSON
 # ---------------------------------------------------------------------------
 
-def test_convert_850_to_json_returns_the_business_data():
-    segments = parse_edi(read_sample_850("valid_850.txt"))
+def test_convert_850_to_json_returns_the_business_data() -> None:
+    segments = parse_edi(read_sample_850("valid_850.txt")).segments
 
-    purchase_order = convert_850_to_json(segments)
+    purchase_order = translate_850(segments)
 
     assert purchase_order["purchase_order_number"] == "PO10001"
     assert purchase_order["purchase_order_date"] == "20260817"
@@ -139,10 +189,10 @@ def test_convert_850_to_json_returns_the_business_data():
     assert purchase_order["seller"]["name"] == "CASCADE SUPPLY CO"
 
 
-def test_convert_850_to_json_returns_two_line_items():
-    segments = parse_edi(read_sample_850("valid_850.txt"))
+def test_convert_850_to_json_returns_two_line_items() -> None:
+    segments = parse_edi(read_sample_850("valid_850.txt")).segments
 
-    purchase_order = convert_850_to_json(segments)
+    purchase_order = translate_850(segments)
 
     assert purchase_order["line_item_count"] == 2
 
@@ -157,11 +207,11 @@ def test_convert_850_to_json_returns_two_line_items():
 # 997 generation
 # ---------------------------------------------------------------------------
 
-def test_generate_997_accepts_a_valid_850():
-    segments = parse_edi(read_sample_850("valid_850.txt"))
-    errors = validate_850(segments)
+def test_generate_997_accepts_a_valid_850() -> None:
+    parsed = parse_edi(read_sample_850("valid_850.txt"))
+    errors = validate_850(parsed.segments)
 
-    acknowledgment = generate_997(segments, errors)
+    acknowledgment = generate_997(parsed.segments, errors, parsed.delimiters)
 
     assert "ST*997*" in acknowledgment
     assert "AK1*PO*101" in acknowledgment    # group control number from the 850
@@ -170,21 +220,104 @@ def test_generate_997_accepts_a_valid_850():
     assert "AK9*A*1*1*1" in acknowledgment
 
 
-def test_generate_997_rejects_an_invalid_850():
-    segments = parse_edi(read_sample_850("invalid_850.txt"))
-    errors = validate_850(segments)
+def test_generate_997_rejects_an_invalid_850() -> None:
+    parsed = parse_edi(read_sample_850("invalid_850.txt"))
+    errors = validate_850(parsed.segments)
 
-    acknowledgment = generate_997(segments, errors)
+    acknowledgment = generate_997(parsed.segments, errors, parsed.delimiters)
 
     assert "AK5*R*5" in acknowledgment
     assert "AK9*R*1*1*0" in acknowledgment
+
+
+def test_generate_997_ak5_lists_multiple_error_codes() -> None:
+    parsed = parse_edi(read_sample_850("valid_850.txt"))
+    errors = [
+        EDIError("segments have errors", AK5Code.SEGMENTS_HAVE_ERRORS),
+        EDIError("trailer missing", AK5Code.TRANSACTION_SET_TRAILER_MISSING),
+    ]
+
+    acknowledgment = generate_997(parsed.segments, errors, parsed.delimiters)
+
+    assert "AK5*R*5*2" in acknowledgment
+    assert "AK9*R*1*1*0" in acknowledgment
+
+
+def test_generate_997_ak5_caps_at_five_distinct_codes() -> None:
+    parsed = parse_edi(read_sample_850("invalid_trans_850.txt"))
+    # AK5Code has 7 members; AK502-AK506 only hold 5, so the 6th and 7th
+    # should be dropped.
+    errors = [EDIError(code.name, code) for code in AK5Code]
+
+    acknowledgment = generate_997(parsed.segments, errors, parsed.delimiters)
+
+    assert "AK5*R*1*2*3*4*5" in acknowledgment
+
+
+def test_generate_997_group_rejected_skips_ak2_and_ak5() -> None:
+    parsed = parse_edi(read_sample_850("invalid_GS_850.txt"))
+    # This file trips two envelope-level problems: GS06/GE02 control number
+    # mismatch and a GE01/ST count mismatch.
+    group_errors = [
+        EDIError(
+            "Group Control Number Mismatch: GS06:1 vs GE02:2.",
+            AK905Code.GROUP_CONTROL_NUMBER_MISMATCH,
+        ),
+        EDIError(
+            "Transaction set count mismatch: GE01 is 2 vs ST segment(s) is 1.",
+            AK905Code.TRANSACTION_COUNT_MISMATCH,
+        ),
+    ]
+
+    acknowledgment = generate_997(
+        parsed.segments, [], parsed.delimiters, group_errors=group_errors
+    )
+
+    assert "AK2*" not in acknowledgment
+    assert "AK5*" not in acknowledgment
+    assert "AK9*R*2*1*0*4*5~" in acknowledgment
+
+
+def test_generate_997_dedupes_repeated_ak5_codes() -> None:
+    parsed = parse_edi(read_sample_850("multi_error_850.txt"))
+    errors = validate_850(parsed.segments)
+
+    acknowledgment = generate_997(parsed.segments, errors, parsed.delimiters)
+
+    # 7 raw errors (five 5s, one 3, one 4) dedupe to three distinct codes,
+    # in first-seen order — proves the fold-to-5 slice doesn't crowd out
+    # the 3 and 4 that arrive after the run of 5s.
+    assert "AK5*R*5*3*4" in acknowledgment
+    assert "AK9*R*1*1*0" in acknowledgment
+
+
+def test_validate_envelope_detects_group_control_mismatch() -> None:
+    segments = parse_edi(read_sample_850("invalid_GS_850.txt")).segments
+
+    result = validate_envelope(segments)
+
+    codes = [error.code for error in result.group_errors]
+    assert AK905Code.GROUP_CONTROL_NUMBER_MISMATCH in codes
+    assert AK905Code.TRANSACTION_COUNT_MISMATCH in codes
+
+
+def test_validate_envelope_detects_interchange_control_mismatch() -> None:
+    segments = parse_edi(read_sample_850("invalid_ISA_850.txt")).segments
+
+    result = validate_envelope(segments)
+
+    assert result.group_errors == []
+    assert any(
+        "Interchange Control Number Mismatch" in error
+        for error in result.interchange_errors
+    )
 
 
 # ---------------------------------------------------------------------------
 # Invoice validation
 # ---------------------------------------------------------------------------
 
-def test_valid_invoice_has_no_validation_errors():
+def test_valid_invoice_has_no_validation_errors() -> None:
     invoice = build_sample_invoice()
 
     errors = validate_invoice(invoice)
@@ -192,7 +325,7 @@ def test_valid_invoice_has_no_validation_errors():
     assert errors == []
 
 
-def test_invalid_invoice_is_detected():
+def test_invalid_invoice_is_detected() -> None:
     invoice = build_sample_invoice()
 
     # Break the invoice on purpose: remove the invoice number and the seller,
@@ -213,17 +346,17 @@ def test_invalid_invoice_is_detected():
 # Invoice -> 810
 # ---------------------------------------------------------------------------
 
-def test_calculate_invoice_total():
+def test_calculate_invoice_total() -> None:
     invoice = build_sample_invoice()
 
     # (10 x 12.50) + (5 x 45.00) = 125.00 + 225.00 = 350.00
     assert calculate_invoice_total(invoice) == 350.00
 
 
-def test_generate_810_builds_the_expected_segments():
+def test_generate_810_builds_the_expected_segments() -> None:
     invoice = build_sample_invoice()
 
-    edi_810 = generate_810(invoice)
+    edi_810 = translate_810(invoice)
 
     assert edi_810.startswith("ISA*")
     assert "ST*810*0001" in edi_810
@@ -234,11 +367,11 @@ def test_generate_810_builds_the_expected_segments():
     assert "CTT*2" in edi_810
 
 
-def test_generate_810_creates_one_it1_per_line_item():
+def test_generate_810_creates_one_it1_per_line_item() -> None:
     invoice = build_sample_invoice()
 
-    edi_810 = generate_810(invoice)
-    segments = parse_edi(edi_810)
+    edi_810 = translate_810(invoice)
+    segments = parse_edi(edi_810).segments
 
     it1_segments = get_segments(segments, "IT1")
     assert len(it1_segments) == 2
@@ -246,21 +379,36 @@ def test_generate_810_creates_one_it1_per_line_item():
     assert it1_segments[1][7] == "GADGET-200"
 
 
-def test_generated_810_passes_its_own_validation():
+def test_generated_810_passes_its_own_validation() -> None:
     invoice = build_sample_invoice()
 
-    edi_810 = generate_810(invoice)
+    edi_810 = translate_810(invoice)
     errors = validate_generated_810(edi_810)
 
     assert errors == []
 
 
-def test_generated_810_se_count_is_correct():
+def test_generated_810_se_count_is_correct() -> None:
     invoice = build_sample_invoice()
 
-    edi_810 = generate_810(invoice)
-    segments = parse_edi(edi_810)
+    edi_810 = translate_810(invoice)
+    segments = parse_edi(edi_810).segments
 
     # ST, BIG, REF, N1, N1, IT1, IT1, TDS, CTT, SE = 10 segments
     se_segment = get_segment(segments, "SE")
     assert se_segment[1] == "10"
+
+
+def test_post_810_endpoint() -> None:
+    invoice = build_sample_invoice()
+
+    response = client.post("/invoice/810", json=invoice)
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["validation_status"] == "accepted"
+    assert body["edi_810"].startswith("ISA*")
+    assert "ST*810*0001" in body["edi_810"]
+    assert "BIG*20260817*INV10001**PO10001" in body["edi_810"]
+    assert "TDS*35000" in body["edi_810"]
+
