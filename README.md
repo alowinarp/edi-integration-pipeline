@@ -253,7 +253,7 @@ See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the full design rationale
 
 ### Out of scope for now
 
-- `build_invoice()`: assembling an invoice payload from `output/850_json/` to close the 850→810 loop automatically — named v2 work; outbound invoices are supplied directly as generic JSON in v1
+- Automated invoice assembly (`build_invoice()`) from `output/850_json/` — in a real integration architecture, the ERP or accounting system owns invoice creation as part of order-to-cash; this pipeline validates and translates the invoice payload it's handed, it doesn't create that payload. Outbound invoices are supplied directly as JSON by design, not as a stand-in for missing functionality.
 - Full X12 implementation-guide validation
 - Partner-specific business rules
 - AK3/AK4 segment-level detail in the 997
@@ -261,6 +261,7 @@ See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the full design rationale
 - Authentication and authorization
 - Production message transport such as AS2, SFTP, VAN, or MQ
 - Warehouse loading and dbt models
+- Multi-GS/multi-ST batch files — v1 assumes one GS and one ST/SE per interchange. Real batch feeds commonly nest multiple transactions inside one functional group, but extending the two-tier validation model and `generate_997()` to a repeating AK1/AK2/AK9 loop is real scope, not a one-line change; named v2 work. If pursued, multi-ST within a single GS is the priority case, since that's the common batching pattern; multi-GS is a stretch goal on top of it.
 
 ---
 
@@ -277,13 +278,11 @@ See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the full design rationale
 - [x] Re-parse and validate generated 810 output
 - [x] Close test-suite coverage gaps against the two-tier validation model (envelope, transaction, dedupe logic)
 - [x] Verify FastAPI endpoints end-to-end, via `TestClient` and manual curl checks
-- [ ] `build_invoice()`: connect `output/850_json/` to invoice generation, closing the 850→810 loop
 - [ ] Add AK3/AK4 details to rejected 997 acknowledgments
 - [ ] Add partner-specific validation rule examples
 - [ ] Add batch-processing summary reports
 - [ ] Add structured logging
-- [ ] Add warehouse-loading example
-- [ ] Add dbt model examples for translated transaction data
+- [ ] Support multi-GS/multi-ST batch files (v1 assumes one GS and one ST/SE per interchange)
 
 ---
 
@@ -306,7 +305,7 @@ Do not commit:
 
 ## Project Status
 
-**v1 complete.** The inbound 850 pipeline (parse → envelope validation → transaction validation → translation → 997) and the outbound 810 pipeline (validate → translate → round-trip validate) are both implemented, tested, and verified end-to-end through the FastAPI service. Current focus: `build_invoice()` and the automated 850→810 handoff, targeted for v2.
+**v1 complete.** The inbound 850 pipeline (parse → envelope validation → transaction validation → translation → 997) and the outbound 810 pipeline (validate → translate → round-trip validate) are both implemented, tested, and verified end-to-end through the FastAPI service. Invoice creation is intentionally out of scope — that responsibility belongs to the ERP/accounting system upstream; this pipeline validates and translates the invoice payload it receives.
 
 ---
 
