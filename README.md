@@ -33,16 +33,16 @@ The focus is not to replace enterprise EDI translators. The focus is to make the
 
 - Inbound X12 850 processing
 - Outbound X12 810 generation
-- 997 functional acknowledgment generation
+- 997 functional acknowledgment generation, with per-rule AK5/AK905 codes and first-seen-order deduplication when more than five errors apply
 - ISA delimiter detection
-- Envelope validation for ISA/GS/GE/IEA structure
+- Envelope validation for ISA/GS/GE/IEA structure, split by acknowledgment tier
 - Control-number validation
 - Transaction-level validation for selected 850 rules
 - Invoice JSON validation before 810 generation
 - Generated-810 round-trip validation
 - CLI-style sample file processing
 - FastAPI endpoints for HTTP-based processing
-- Pytest test suite
+- Pytest test suite covering both validation tiers, the 997 dedupe logic, and the FastAPI endpoints directly
 - Fictional sample input files
 
 ---
@@ -129,6 +129,7 @@ edi-integration-pipeline/
 - FastAPI
 - Uvicorn
 - pytest
+- httpx (test dependency — powers FastAPI's `TestClient` for endpoint tests; not imported by the application itself)
 
 Install dependencies from `requirements.txt`.
 
@@ -198,6 +199,8 @@ Run tests with verbose output:
 pytest -v
 ```
 
+The suite covers both envelope-validation tiers, transaction-level AK5 codes, the 997 dedupe/fold-to-5 logic, and the FastAPI endpoints directly via `TestClient` — not just the underlying functions.
+
 ---
 
 ## Example Outputs
@@ -225,6 +228,7 @@ The major design decisions are:
 - Unparseable or structurally unsafe interchanges halt before 997 generation.
 - Transaction-level compliance failures return a business rejection, not a transport failure.
 - Validation runs before translation.
+- Every transaction-level validation error carries a specific AK5 code, and `generate_997()` deduplicates repeated codes in first-seen order before slicing to the five AK502–AK506 slots, so a common error doesn't crowd out a more specific one.
 - Generated outbound 810 files are re-parsed and validated before being written.
 - Delimiters are detected from the inbound ISA and reused when generating acknowledgments.
 
@@ -237,18 +241,19 @@ See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the full design rationale
 ### In scope
 
 - X12 850 purchase-order parsing
-- X12 850 compliance validation for selected rules
+- X12 850 compliance validation for selected rules, with accurate per-rule AK5 codes
 - X12 850 to JSON translation
-- 997 acknowledgment generation
+- 997 acknowledgment generation for accepted, transaction-rejected, and group-rejected outcomes
 - Invoice JSON validation
 - Invoice JSON to X12 810 translation
 - Generated 810 validation
 - CLI sample processing
-- FastAPI endpoints
+- FastAPI endpoints, verified end-to-end (both HTTP status paths and response bodies) via automated tests and manual curl checks
 - Automated tests
 
 ### Out of scope for now
 
+- `build_invoice()`: assembling an invoice payload from `output/850_json/` to close the 850→810 loop automatically — named v2 work; outbound invoices are supplied directly as generic JSON in v1
 - Full X12 implementation-guide validation
 - Partner-specific business rules
 - AK3/AK4 segment-level detail in the 997
@@ -266,9 +271,13 @@ See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the full design rationale
 - [x] Split envelope validation by acknowledgment tier (interchange vs. group)
 - [x] Validate selected 850 compliance rules
 - [x] Generate accepted and rejected 997 acknowledgments
+- [x] Retrofit transaction-level validation to carry real AK5 codes, with first-seen-order deduplication in `generate_997()`
 - [x] Translate valid 850 files to JSON
 - [x] Generate outbound X12 810 invoices from JSON
 - [x] Re-parse and validate generated 810 output
+- [x] Close test-suite coverage gaps against the two-tier validation model (envelope, transaction, dedupe logic)
+- [x] Verify FastAPI endpoints end-to-end, via `TestClient` and manual curl checks
+- [ ] `build_invoice()`: connect `output/850_json/` to invoice generation, closing the 850→810 loop
 - [ ] Add AK3/AK4 details to rejected 997 acknowledgments
 - [ ] Add partner-specific validation rule examples
 - [ ] Add batch-processing summary reports
@@ -297,7 +306,7 @@ Do not commit:
 
 ## Project Status
 
-Active development. Current focus: strengthening validation coverage, test coverage, and documentation.
+**v1 complete.** The inbound 850 pipeline (parse → envelope validation → transaction validation → translation → 997) and the outbound 810 pipeline (validate → translate → round-trip validate) are both implemented, tested, and verified end-to-end through the FastAPI service. Current focus: `build_invoice()` and the automated 850→810 handoff, targeted for v2.
 
 ---
 

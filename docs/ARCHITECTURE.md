@@ -383,7 +383,7 @@ Contains small validation helpers and shared error types reused by validation mo
 | `has_value()` | Checks whether a value is present and not blank |
 | `is_number()` | Checks whether a value can be treated as numeric |
 | `is_positive_number()` | Checks whether a value is numeric and greater than zero |
-| `EDIError` | Shared, tier-agnostic error container (`message`, `code`); used by group-tier envelope validation today, with transaction-tier validation slated to adopt it |
+| `EDIError` | Shared, tier-agnostic error container (`message`, `code`); used by both group-tier envelope validation and transaction-tier `validate_850()` checks |
 | `AK5Code` | Transaction Set Response Trailer error codes (AK502–AK506) |
 | `AK905Code` | Functional Group Response Trailer error codes (AK905–AK909) |
 
@@ -669,17 +669,19 @@ output file
 
 ## 12. Testing Strategy
 
-The test suite should protect the behavior that matters most in production-shaped EDI processing:
+The test suite protects the behavior that matters most in production-shaped EDI processing:
 
 - Parser rejects malformed interchanges early.
 - Delimiters are detected correctly.
-- Interchange-tier envelope validation catches control-number and count problems and halts with no 997.
-- Group-tier envelope validation catches GS/GE control-number and count problems and generates a correctly-shaped rejected 997 (AK1 + AK9 only, correct AK905–AK909 codes).
-- 850 validation catches required-field and numeric-field issues.
-- Invalid 850 transactions generate rejected 997 acknowledgments.
-- Valid 850 transactions generate accepted 997 acknowledgments and JSON.
+- Interchange-tier envelope validation catches control-number and count problems and halts with no 997 — tested by calling `validate_envelope()` directly against a fixture with a planted ISA13/IEA02 mismatch, asserting `group_errors == []` so the tier short-circuit itself is proven, not just that an error fired somewhere.
+- Group-tier envelope validation catches GS/GE control-number and count problems and generates a correctly-shaped rejected 997 (AK1 + AK9 only, correct AK905–AK909 codes) — tested at two levels: `validate_envelope()` detecting the mismatch, and `generate_997()` rendering it correctly once handed a `group_errors` list. These are deliberately separate tests, since one proves detection and the other proves rendering.
+- `process_850()` correctly short-circuits to `envelope_rejected` (no 997, no purchase-order JSON) when `validate_envelope()` returns interchange-tier errors — tested directly against the orchestrator, not just the underlying validator.
+- 850 validation catches required-field and numeric-field issues, and each resulting `EDIError` carries the correct `AK5Code` — not just the correct message text.
+- `generate_997()`'s AK502–AK506 dedupe logic is exercised against a fixture engineered to produce five events of one code plus one event each of two other codes, in a specific order, proving the fold-to-5 slice preserves first-seen distinct codes rather than letting a repeated common code crowd out a more specific one.
+- Invalid 850 transactions generate rejected 997 acknowledgments; valid 850 transactions generate accepted 997 acknowledgments and JSON.
 - Invoice validation catches missing or malformed invoice data.
 - Generated 810 files pass round-trip validation.
+- `/edi/850` and `/invoice/810` are tested through FastAPI's `TestClient`, not just through the underlying processing functions — confirming the HTTP status codes and response bodies actually match what the orchestrators return, including the 400 returned for an envelope-rejected interchange.
 
 Run tests from the repository root:
 
@@ -712,7 +714,7 @@ Replace `<PID>` with the process ID returned by `lsof`.
 
 Potential next steps:
 
-- Retrofit `validate_850()`'s checks to populate real `AK5Code` values via `EDIError`, so transaction-tier AK5 reflects the specific rule that failed instead of a fixed code.
+- `build_invoice()`: assemble an invoice payload from `output/850_json/` and hand it to `process_invoice()`, closing the 850→810 loop that today requires the caller to supply invoice JSON directly.
 - Add AK3 and AK4 detail to rejected 997 acknowledgments.
 - Add batch-folder processing.
 - Add structured logging.
